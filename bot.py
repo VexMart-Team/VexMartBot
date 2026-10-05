@@ -1,28 +1,29 @@
-import os
+Вроде вот это import os
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
 from supabase import create_client, Client
 
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+Update,
+InlineKeyboardButton,
+InlineKeyboardMarkup,
 )
 
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+Application,
+CommandHandler,
+CallbackQueryHandler,
+MessageHandler,
+ContextTypes,
+filters,
 )
 
+============================================================
 
-# ============================================================
-# CONFIG
-# ============================================================
+CONFIG
+
+============================================================
 
 VERSION = "0.42.2"
 
@@ -32,4194 +33,4193 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+raise RuntimeError("BOT_TOKEN is not set")
 
 if not SUPABASE_URL:
-    raise RuntimeError("SUPABASE_URL is not set")
+raise RuntimeError("SUPABASE_URL is not set")
 
 if not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_KEY is not set")
-
+raise RuntimeError("SUPABASE_KEY is not set")
 
 supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY,
+SUPABASE_URL,
+SUPABASE_KEY,
 )
 
+============================================================
 
-# ============================================================
-# DATABASE HELPERS
-# ============================================================
+DATABASE HELPERS
+
+============================================================
 
 def db_select(
-    table,
-    columns="*",
-    filters_dict=None,
-    limit=None,
-    order_by=None,
-    ascending=False,
+table,
+columns="*",
+filters_dict=None,
+limit=None,
+order_by=None,
+ascending=False,
 ):
-    try:
-        query = supabase.table(table).select(columns)
+try:
+query = supabase.table(table).select(columns)
 
-        if filters_dict:
-            for key, value in filters_dict.items():
-                query = query.eq(key, value)
+if filters_dict:
+for key, value in filters_dict.items():
+query = query.eq(key, value)
 
-        if order_by:
-            query = query.order(
-                order_by,
-                desc=not ascending,
-            )
+if order_by:    
+    query = query.order(    
+        order_by,    
+        desc=not ascending,    
+    )    
 
-        if limit:
-            query = query.limit(limit)
+if limit:    
+    query = query.limit(limit)    
 
-        result = query.execute()
+result = query.execute()    
 
-        return result.data or []
+return result.data or []
 
-    except Exception as e:
-        print(f"[DB SELECT ERROR] {table}: {e}")
-        return []
-
+except Exception as e:
+print(f"[DB SELECT ERROR] {table}: {e}")
+return []
 
 def db_insert(table, data):
-    try:
-        result = supabase.table(table).insert(data).execute()
-        return result.data or []
+try:
+result = supabase.table(table).insert(data).execute()
+return result.data or []
 
-    except Exception as e:
-        print(f"[DB INSERT ERROR] {table}: {e}")
-        return []
-
+except Exception as e:
+print(f"[DB INSERT ERROR] {table}: {e}")
+return []
 
 def db_update(table, data, filters_dict):
-    try:
-        query = supabase.table(table).update(data)
+try:
+query = supabase.table(table).update(data)
 
-        for key, value in filters_dict.items():
-            query = query.eq(key, value)
+for key, value in filters_dict.items():
+query = query.eq(key, value)
 
-        result = query.execute()
+result = query.execute()    
 
-        return result.data or []
+return result.data or []
 
-    except Exception as e:
-        print(f"[DB UPDATE ERROR] {table}: {e}")
-        return []
-
+except Exception as e:
+print(f"[DB UPDATE ERROR] {table}: {e}")
+return []
 
 def db_delete(table, filters_dict):
-    try:
-        query = supabase.table(table).delete()
+try:
+query = supabase.table(table).delete()
 
-        for key, value in filters_dict.items():
-            query = query.eq(key, value)
+for key, value in filters_dict.items():
+query = query.eq(key, value)
 
-        result = query.execute()
+result = query.execute()    
 
-        return result.data or []
+return result.data or []
 
-    except Exception as e:
-        print(f"[DB DELETE ERROR] {table}: {e}")
-        return []
+except Exception as e:
+print(f"[DB DELETE ERROR] {table}: {e}")
+return []
 
+============================================================
 
-# ============================================================
-# CALLBACK ANSWER
-# ============================================================
+CALLBACK ANSWER
+
+============================================================
 
 async def safe_query_answer(
-    query,
-    text=None,
-    show_alert=False,
+query,
+text=None,
+show_alert=False,
 ):
-    """
-    Безопасно подтверждает нажатие inline-кнопки.
+"""
+Безопасно подтверждает нажатие inline-кнопки.
 
-    Telegram требует ответа на callback query.
-    Благодаря этой функции старые/уже отвеченные callbacks
-    не ломают работу бота.
-    """
+Telegram требует ответа на callback query.
+Благодаря этой функции старые/уже отвеченные callbacks
+не ломают работу бота.
+"""
 
-    try:
-        await query.answer(
-            text=text,
-            show_alert=show_alert,
-        )
+try:
+await query.answer(
+text=text,
+show_alert=show_alert,
+)
 
-    except Exception as e:
-        error_text = str(e).lower()
+except Exception as e:
+error_text = str(e).lower()
 
-        if (
-            "query is too old" not in error_text
-            and "query id is invalid" not in error_text
-            and "already answered" not in error_text
-        ):
-            print(
-                f"[QUERY ANSWER ERROR] {e}"
-            )
+if (    
+    "query is too old" not in error_text    
+    and "query id is invalid" not in error_text    
+    and "already answered" not in error_text    
+):    
+    print(    
+        f"[QUERY ANSWER ERROR] {e}"    
+    )
 
+============================================================
 
-# ============================================================
-# USERS
-# ============================================================
+USERS
+
+============================================================
 
 def get_user(user_id):
-    users = db_select(
-        "users",
-        filters_dict={
-            "id": user_id,
-        },
-        limit=1,
-    )
+users = db_select(
+"users",
+filters_dict={
+"id": user_id,
+},
+limit=1,
+)
 
-    return users[0] if users else None
-
+return users[0] if users else None
 
 def ensure_user(tg_user):
-    user = get_user(tg_user.id)
+user = get_user(tg_user.id)
 
-    if user:
-        updates = {}
+if user:
+updates = {}
 
-        if user.get("username") != tg_user.username:
-            updates["username"] = tg_user.username
+if user.get("username") != tg_user.username:    
+    updates["username"] = tg_user.username    
 
-        if user.get("first_name") != tg_user.first_name:
-            updates["first_name"] = tg_user.first_name
+if user.get("first_name") != tg_user.first_name:    
+    updates["first_name"] = tg_user.first_name    
 
-        if updates:
-            db_update(
-                "users",
-                updates,
-                {
-                    "id": tg_user.id,
-                },
-            )
+if updates:    
+    db_update(    
+        "users",    
+        updates,    
+        {    
+            "id": tg_user.id,    
+        },    
+    )    
 
-        return get_user(tg_user.id)
+return get_user(tg_user.id)
 
-    created = db_insert(
-        "users",
-        {
-            "id": tg_user.id,
-            "username": tg_user.username,
-            "first_name": tg_user.first_name,
-            "role": "buyer",
-            "balance": 100,
-        },
-    )
+created = db_insert(
+"users",
+{
+"id": tg_user.id,
+"username": tg_user.username,
+"first_name": tg_user.first_name,
+"role": "buyer",
+"balance": 100,
+},
+)
 
-    return created[0] if created else None
-
+return created[0] if created else None
 
 def set_role(user_id, role):
-    db_update(
-        "users",
-        {
-            "role": role,
-        },
-        {
-            "id": user_id,
-        },
-    )
+db_update(
+"users",
+{
+"role": role,
+},
+{
+"id": user_id,
+},
+)
 
+============================================================
 
-# ============================================================
-# STORE HELPERS
-# ============================================================
+STORE HELPERS
+
+============================================================
 
 def get_store(store_id):
-    stores = db_select(
-        "stores",
-        filters_dict={
-            "id": store_id,
-        },
-        limit=1,
-    )
+stores = db_select(
+"stores",
+filters_dict={
+"id": store_id,
+},
+limit=1,
+)
 
-    return stores[0] if stores else None
-
+return stores[0] if stores else None
 
 def get_owned_store(user_id):
-    stores = db_select(
-        "stores",
-        filters_dict={
-            "owner_id": user_id,
-        },
-        limit=1,
-    )
+stores = db_select(
+"stores",
+filters_dict={
+"owner_id": user_id,
+},
+limit=1,
+)
 
-    return stores[0] if stores else None
-
+return stores[0] if stores else None
 
 def get_store_seller_rows(store_id):
-    return db_select(
-        "store_sellers",
-        filters_dict={
-            "store_id": store_id,
-        },
-    )
-
+return db_select(
+"store_sellers",
+filters_dict={
+"store_id": store_id,
+},
+)
 
 def get_store_member_ids(store_id):
-    store = get_store(store_id)
+store = get_store(store_id)
 
-    if not store:
-        return []
+if not store:
+return []
 
-    ids = []
+ids = []
 
-    owner_id = store.get("owner_id")
+owner_id = store.get("owner_id")
 
-    if owner_id:
-        ids.append(owner_id)
+if owner_id:
+ids.append(owner_id)
 
-    seller_rows = get_store_seller_rows(
-        store_id
-    )
+seller_rows = get_store_seller_rows(
+store_id
+)
 
-    for row in seller_rows:
-        user_id = row.get("user_id")
+for row in seller_rows:
+user_id = row.get("user_id")
 
-        if user_id and user_id not in ids:
-            ids.append(user_id)
+if user_id and user_id not in ids:    
+    ids.append(user_id)
 
-    return ids
-
+return ids
 
 def is_store_member(user_id, store_id):
-    store = get_store(store_id)
+store = get_store(store_id)
 
-    if not store:
-        return False
+if not store:
+return False
 
-    if store.get("owner_id") == user_id:
-        return True
+if store.get("owner_id") == user_id:
+return True
 
-    rows = db_select(
-        "store_sellers",
-        filters_dict={
-            "store_id": store_id,
-            "user_id": user_id,
-        },
-        limit=1,
-    )
+rows = db_select(
+"store_sellers",
+filters_dict={
+"store_id": store_id,
+"user_id": user_id,
+},
+limit=1,
+)
 
-    return bool(rows)
-
+return bool(rows)
 
 def get_user_stores(user_id):
-    result = []
+result = []
 
-    owned = db_select(
-        "stores",
-        filters_dict={
-            "owner_id": user_id,
-        },
-    )
+owned = db_select(
+"stores",
+filters_dict={
+"owner_id": user_id,
+},
+)
 
-    for store in owned:
-        if store["id"] not in [
-            x["id"] for x in result
-        ]:
-            result.append(store)
+for store in owned:
+if store["id"] not in [
+x["id"] for x in result
+]:
+result.append(store)
 
-    seller_rows = db_select(
-        "store_sellers",
-        filters_dict={
-            "user_id": user_id,
-        },
-    )
+seller_rows = db_select(
+"store_sellers",
+filters_dict={
+"user_id": user_id,
+},
+)
 
-    for row in seller_rows:
-        store = get_store(
-            row.get("store_id")
-        )
+for row in seller_rows:
+store = get_store(
+row.get("store_id")
+)
 
-        if store and store["id"] not in [
-            x["id"] for x in result
-        ]:
-            result.append(store)
+if store and store["id"] not in [    
+    x["id"] for x in result    
+]:    
+    result.append(store)
 
-    return result
-
+return result
 
 def get_user_store(user_id):
-    stores = get_user_stores(user_id)
+stores = get_user_stores(user_id)
 
-    return stores[0] if stores else None
+return stores[0] if stores else None
 
+============================================================
 
-# ============================================================
-# PRODUCT HELPERS
-# ============================================================
+PRODUCT HELPERS
+
+============================================================
 
 def get_product(product_id):
-    products = db_select(
-        "products",
-        filters_dict={
-            "id": product_id,
-        },
-        limit=1,
-    )
+products = db_select(
+"products",
+filters_dict={
+"id": product_id,
+},
+limit=1,
+)
 
-    return products[0] if products else None
-
+return products[0] if products else None
 
 def is_new_product(product):
-    created_at = product.get("created_at")
+created_at = product.get("created_at")
 
-    if not created_at:
-        return False
+if not created_at:
+return False
 
-    try:
-        created = datetime.fromisoformat(
-            str(created_at).replace(
-                "Z",
-                "+00:00",
-            )
-        )
+try:
+created = datetime.fromisoformat(
+str(created_at).replace(
+"Z",
+"+00:00",
+)
+)
 
-        if created.tzinfo is None:
-            created = created.replace(
-                tzinfo=timezone.utc
-            )
+if created.tzinfo is None:    
+    created = created.replace(    
+        tzinfo=timezone.utc    
+    )    
 
-        return (
-            datetime.now(timezone.utc) - created
-            < timedelta(days=5)
-        )
+return (    
+    datetime.now(timezone.utc) - created    
+    < timedelta(days=5)    
+)
 
-    except Exception:
-        return False
-
+except Exception:
+return False
 
 def product_title(product):
-    title = product.get(
-        "name",
-        "Без названия",
-    )
+title = product.get(
+"name",
+"Без названия",
+)
 
-    if is_new_product(product):
-        title = f"🆕 {title}"
+if is_new_product(product):
+title = f"🆕 {title}"
 
-    return title
+return title
 
+============================================================
 
-# ============================================================
-# NOTIFICATIONS
-# ============================================================
+NOTIFICATIONS
+
+============================================================
 
 async def notify_user(
-    bot,
-    user_id,
-    text,
-    reply_markup=None,
+bot,
+user_id,
+text,
+reply_markup=None,
 ):
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=reply_markup,
-        )
+try:
+await bot.send_message(
+chat_id=user_id,
+text=text,
+reply_markup=reply_markup,
+)
 
-    except Exception as e:
-        print(
-            f"[NOTIFY ERROR] user={user_id}: {e}"
-        )
+except Exception as e:
+print(
+f"[NOTIFY ERROR] user={user_id}: {e}"
+)
 
+============================================================
 
-# ============================================================
-# MENUS
-# ============================================================
+MENUS
+
+============================================================
 
 def buyer_menu(user_id=None):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "🏪 Магазины",
-                callback_data="stores",
-            ),
-            InlineKeyboardButton(
-                "🛒 Корзина",
-                callback_data="cart",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 Мои заказы",
-                callback_data="buyer_orders",
-            ),
-            InlineKeyboardButton(
-                "📋 Задания",
-                callback_data="tasks",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📍 Магазины рядом",
-                callback_data="nearby_stores",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👤 Профиль",
-                callback_data="profile",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💼 Стать продавцом",
-                callback_data="become_seller",
-            ),
-        ],
-    ]
+buttons = [
+[
+InlineKeyboardButton(
+"🏪 Магазины",
+callback_data="stores",
+),
+InlineKeyboardButton(
+"🛒 Корзина",
+callback_data="cart",
+),
+],
+[
+InlineKeyboardButton(
+"📦 Мои заказы",
+callback_data="buyer_orders",
+),
+InlineKeyboardButton(
+"📋 Задания",
+callback_data="tasks",
+),
+],
+[
+InlineKeyboardButton(
+"📍 Магазины рядом",
+callback_data="nearby_stores",
+),
+],
+[
+InlineKeyboardButton(
+"👤 Профиль",
+callback_data="profile",
+),
+],
+[
+InlineKeyboardButton(
+"💼 Стать продавцом",
+callback_data="become_seller",
+),
+],
+]
 
-    if user_id == ADMIN_ID:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🛠 Админ-панель",
-                    callback_data="admin",
-                )
-            ]
-        )
+if user_id == ADMIN_ID:
+buttons.append(
+[
+InlineKeyboardButton(
+"🛠 Админ-панель",
+callback_data="admin",
+)
+]
+)
 
-    return InlineKeyboardMarkup(buttons)
-
+return InlineKeyboardMarkup(buttons)
 
 def seller_menu(user_id):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "🏪 Мой магазин",
-                callback_data="my_store",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "➕ Добавить продавца",
-                callback_data="add_seller",
-            ),
-            InlineKeyboardButton(
-                "📨 Запросы в магазин",
-                callback_data="seller_requests",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 Мои товары",
-                callback_data="my_products",
-            ),
-            InlineKeyboardButton(
-                "🛒 Заказы",
-                callback_data="seller_orders",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👤 Профиль",
-                callback_data="profile",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🛍 Стать покупателем",
-                callback_data="switch_buyer",
-            ),
-        ],
-    ]
+buttons = [
+[
+InlineKeyboardButton(
+"🏪 Мой магазин",
+callback_data="my_store",
+),
+],
+[
+InlineKeyboardButton(
+"➕ Добавить продавца",
+callback_data="add_seller",
+),
+InlineKeyboardButton(
+"📨 Запросы в магазин",
+callback_data="seller_requests",
+),
+],
+[
+InlineKeyboardButton(
+"📦 Мои товары",
+callback_data="my_products",
+),
+InlineKeyboardButton(
+"🛒 Заказы",
+callback_data="seller_orders",
+),
+],
+[
+InlineKeyboardButton(
+"👤 Профиль",
+callback_data="profile",
+),
+],
+[
+InlineKeyboardButton(
+"🛍 Стать покупателем",
+callback_data="switch_buyer",
+),
+],
+]
 
-    if user_id == ADMIN_ID:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🛠 Админ-панель",
-                    callback_data="admin",
-                )
-            ]
-        )
+if user_id == ADMIN_ID:
+buttons.append(
+[
+InlineKeyboardButton(
+"🛠 Админ-панель",
+callback_data="admin",
+)
+]
+)
 
-    return InlineKeyboardMarkup(buttons)
+return InlineKeyboardMarkup(buttons)
 
+============================================================
 
-# ============================================================
-# START
-# ============================================================
+START
+
+============================================================
 
 async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
 ):
-    user = update.effective_user
+user = update.effective_user
 
-    ensure_user(user)
+ensure_user(user)
 
-    db_insert(
-        "bot_visits",
-        {
-            "user_id": user.id,
-        },
-    )
+db_insert(
+"bot_visits",
+{
+"user_id": user.id,
+},
+)
 
-    await update.message.reply_text(
-        f"🛍 Добро пожаловать в VexMart!\n\n"
-        f"Версия: {VERSION}",
-        reply_markup=buyer_menu(
-            user.id
-        ),
-    )
+await update.message.reply_text(
+f"🛍 Добро пожаловать в VexMart!\n\n"
+f"Версия: {VERSION}",
+reply_markup=buyer_menu(
+user.id
+),
+)
 
+============================================================
 
-# ============================================================
-# PROFILE
-# ============================================================
+PROFILE
+
+============================================================
 
 async def show_profile(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    user = get_user(user_id)
+user = get_user(user_id)
 
-    if not user:
-        await safe_query_answer(
-            query,
-            "Профиль не найден",
-        )
-        return
+if not user:
+await safe_query_answer(
+query,
+"Профиль не найден",
+)
+return
 
-    role = user.get(
-        "role",
-        "buyer",
-    )
+role = user.get(
+"role",
+"buyer",
+)
 
-    role_text = (
-        "🛍 Покупатель"
-        if role == "buyer"
-        else "💼 Продавец"
-    )
+role_text = (
+"🛍 Покупатель"
+if role == "buyer"
+else "💼 Продавец"
+)
 
-    balance = user.get(
-        "balance",
-        0,
-    )
+balance = user.get(
+"balance",
+0,
+)
 
-    text = (
-        "👤 Профиль\n\n"
-        f"Имя: {user.get('first_name') or '—'}\n"
-        f"Username: @{user.get('username') or '—'}\n"
-        f"ID: {user_id}\n"
-        f"Роль: {role_text}\n"
-        f"💰 Баланс: {balance} ₽"
-    )
+text = (
+"👤 Профиль\n\n"
+f"Имя: {user.get('first_name') or '—'}\n"
+f"Username: @{user.get('username') or '—'}\n"
+f"ID: {user_id}\n"
+f"Роль: {role_text}\n"
+f"💰 Баланс: {balance} ₽"
+)
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="back_menu",
-            )
-        ]
-    ]
+keyboard = [
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]
+]
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            keyboard
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+keyboard
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# STORES
-# ============================================================
+STORES
+
+============================================================
 
 async def show_stores(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    stores = db_select(
-        "stores",
-        order_by="created_at",
-        ascending=False,
-    )
+stores = db_select(
+"stores",
+order_by="created_at",
+ascending=False,
+)
 
-    if not stores:
-        await query.edit_message_text(
-            "🏪 Магазинов пока нет.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu",
-                    )
-                ]]
-            ),
-        )
+if not stores:
+await query.edit_message_text(
+"🏪 Магазинов пока нет.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    buttons = []
+buttons = []
 
-    for store in stores:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"🏪 {store.get('name', 'Магазин')}",
-                    callback_data=f"store_{store['id']}",
-                )
-            ]
-        )
+for store in stores:
+buttons.append(
+[
+InlineKeyboardButton(
+f"🏪 {store.get('name', 'Магазин')}",
+callback_data=f"store_{store['id']}",
+)
+]
+)
 
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="back_menu",
-            )
-        ]
-    )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]
+)
 
-    await query.edit_message_text(
-        "🏪 Магазины:",
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+"🏪 Магазины:",
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def show_store(
-    update,
-    context,
-    store_id,
+update,
+context,
+store_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    store = get_store(store_id)
+store = get_store(store_id)
 
-    if not store:
-        await safe_query_answer(
-            query,
-            "Магазин не найден",
-        )
-        return
+if not store:
+await safe_query_answer(
+query,
+"Магазин не найден",
+)
+return
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    products = db_select(
-        "products",
-        filters_dict={
-            "store_id": store_id,
-        },
+products = db_select(
+"products",
+filters_dict={
+"store_id": store_id,
+},
+)
+
+member = is_store_member(
+user_id,
+store_id,
+)
+
+owner_id = store.get(
+"owner_id"
+)
+
+seller_rows = get_store_seller_rows(
+store_id
+)
+
+seller_count = (
+1 + len(seller_rows)
+)
+
+owner = get_user(owner_id)
+
+seller_names = []
+
+if owner:
+seller_names.append(
+owner.get("first_name")
+or owner.get("username")
+or "Продавец"
+)
+
+for row in seller_rows:
+seller = get_user(
+row.get("user_id")
+)
+
+if seller:    
+    seller_names.append(    
+        seller.get("first_name")    
+        or seller.get("username")    
+        or "Продавец"    
     )
 
-    member = is_store_member(
-        user_id,
-        store_id,
-    )
+text = (
+f"🏪 {store.get('name', 'Магазин')}\n\n"
+f"{store.get('description') or 'Описание отсутствует.'}\n\n"
+f"👥 Продавцов: {seller_count}\n"
+f"👤 {', '.join(seller_names) or '—'}"
+)
 
-    owner_id = store.get(
-        "owner_id"
-    )
+if store.get("address"):
+text += (
+f"\n📍 {store['address']}"
+)
 
-    seller_rows = get_store_seller_rows(
-        store_id
-    )
+buttons = []
 
-    seller_count = (
-        1 + len(seller_rows)
-    )
+if products:
+for product in products:
+buttons.append(
+[
+InlineKeyboardButton(
+f"{product_title(product)} — "
+f"{product.get('price', 0)} ₽ "
+f"(ост. {product.get('stock', 0)})",
+callback_data=(
+f"product_{product['id']}"
+),
+)
+]
+)
 
-    owner = get_user(owner_id)
+else:
+text += (
+"\n\n📦 Товаров пока нет."
+)
 
-    seller_names = []
+if not member:
+buttons.append(
+[
+InlineKeyboardButton(
+"🙋 Запроситься в продавцы",
+callback_data=(
+f"join_store_{store_id}"
+),
+)
+]
+)
 
-    if owner:
-        seller_names.append(
-            owner.get("first_name")
-            or owner.get("username")
-            or "Продавец"
-        )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ К магазинам",
+callback_data="stores",
+)
+]
+)
 
-    for row in seller_rows:
-        seller = get_user(
-            row.get("user_id")
-        )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-        if seller:
-            seller_names.append(
-                seller.get("first_name")
-                or seller.get("username")
-                or "Продавец"
-            )
+await safe_query_answer(query)
 
-    text = (
-        f"🏪 {store.get('name', 'Магазин')}\n\n"
-        f"{store.get('description') or 'Описание отсутствует.'}\n\n"
-        f"👥 Продавцов: {seller_count}\n"
-        f"👤 {', '.join(seller_names) or '—'}"
-    )
+============================================================
 
-    if store.get("address"):
-        text += (
-            f"\n📍 {store['address']}"
-        )
+JOIN STORE
 
-    buttons = []
-
-    if products:
-        for product in products:
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        f"{product_title(product)} — "
-                        f"{product.get('price', 0)} ₽ "
-                        f"(ост. {product.get('stock', 0)})",
-                        callback_data=(
-                            f"product_{product['id']}"
-                        ),
-                    )
-                ]
-            )
-
-    else:
-        text += (
-            "\n\n📦 Товаров пока нет."
-        )
-
-    if not member:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🙋 Запроситься в продавцы",
-                    callback_data=(
-                        f"join_store_{store_id}"
-                    ),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ К магазинам",
-                callback_data="stores",
-            )
-        ]
-    )
-
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
-
-    await safe_query_answer(query)
-
-
-# ============================================================
-# JOIN STORE
-# ============================================================
+============================================================
 
 async def join_store(
-    update,
-    context,
-    store_id,
+update,
+context,
+store_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    store = get_store(store_id)
+store = get_store(store_id)
 
-    if not store:
-        await safe_query_answer(
-            query,
-            "Магазин не найден",
-        )
-        return
+if not store:
+await safe_query_answer(
+query,
+"Магазин не найден",
+)
+return
 
-    if is_store_member(
-        user_id,
-        store_id,
-    ):
-        await safe_query_answer(
-            query,
-            "Ты уже продавец этого магазина.",
-        )
-        return
+if is_store_member(
+user_id,
+store_id,
+):
+await safe_query_answer(
+query,
+"Ты уже продавец этого магазина.",
+)
+return
 
-    existing = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "store_id": store_id,
-            "sender_id": user_id,
-            "status": "pending",
-        },
-    )
+existing = db_select(
+"store_seller_requests",
+filters_dict={
+"store_id": store_id,
+"sender_id": user_id,
+"status": "pending",
+},
+)
 
-    if existing:
-        await safe_query_answer(
-            query,
-            "Запрос уже отправлен.",
-        )
-        return
+if existing:
+await safe_query_answer(
+query,
+"Запрос уже отправлен.",
+)
+return
 
-    request = db_insert(
-        "store_seller_requests",
-        {
-            "store_id": store_id,
-            "sender_id": user_id,
-            "receiver_id": store.get(
-                "owner_id"
-            ),
-            "status": "pending",
-        },
-    )
+request = db_insert(
+"store_seller_requests",
+{
+"store_id": store_id,
+"sender_id": user_id,
+"receiver_id": store.get(
+"owner_id"
+),
+"status": "pending",
+},
+)
 
-    if not request:
-        await safe_query_answer(
-            query,
-            "Не удалось отправить запрос.",
-        )
-        return
+if not request:
+await safe_query_answer(
+query,
+"Не удалось отправить запрос.",
+)
+return
 
-    request_id = request[0]["id"]
+request_id = request[0]["id"]
 
-    buttons = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton(
-                "✅ Одобрить",
-                callback_data=(
-                    f"approve_request_{request_id}"
-                ),
-            ),
-            InlineKeyboardButton(
-                "❌ Отклонить",
-                callback_data=(
-                    f"reject_request_{request_id}"
-                ),
-            ),
-        ]]
-    )
+buttons = InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"✅ Одобрить",
+callback_data=(
+f"approve_request_{request_id}"
+),
+),
+InlineKeyboardButton(
+"❌ Отклонить",
+callback_data=(
+f"reject_request_{request_id}"
+),
+),
+]]
+)
 
-    await notify_user(
-        context.bot,
-        store.get("owner_id"),
-        (
-            "📨 Новый запрос в магазин!\n\n"
-            f"🏪 Магазин: {store.get('name')}\n"
-            f"👤 Пользователь: "
-            f"{query.from_user.first_name or 'Без имени'}\n"
-            f"🆔 ID: {user_id}"
-        ),
-        buttons,
-    )
+await notify_user(
+context.bot,
+store.get("owner_id"),
+(
+"📨 Новый запрос в магазин!\n\n"
+f"🏪 Магазин: {store.get('name')}\n"
+f"👤 Пользователь: "
+f"{query.from_user.first_name or 'Без имени'}\n"
+f"🆔 ID: {user_id}"
+),
+buttons,
+)
 
-    await safe_query_answer(
-        query,
-        "Запрос отправлен владельцу магазина!",
-    )
+await safe_query_answer(
+query,
+"Запрос отправлен владельцу магазина!",
+)
 
+============================================================
 
-# ============================================================
-# SELLER REQUESTS
-# ============================================================
+SELLER REQUESTS
+
+============================================================
 
 async def show_seller_requests(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    stores = get_user_stores(
-        user_id
-    )
+stores = get_user_stores(
+user_id
+)
 
-    if not stores:
-        await safe_query_answer(
-            query,
-            "У тебя нет магазина.",
-        )
-        return
+if not stores:
+await safe_query_answer(
+query,
+"У тебя нет магазина.",
+)
+return
 
-    store_ids = [
-        store["id"]
-        for store in stores
-    ]
+store_ids = [
+store["id"]
+for store in stores
+]
 
-    requests = db_select(
-        "store_seller_requests",
-    )
+requests = db_select(
+"store_seller_requests",
+)
 
-    requests = [
-        r
-        for r in requests
-        if r.get("store_id") in store_ids
-        and r.get("status") == "pending"
-        and r.get("receiver_id") == user_id
-    ]
+requests = [
+r
+for r in requests
+if r.get("store_id") in store_ids
+and r.get("status") == "pending"
+and r.get("receiver_id") == user_id
+]
 
-    if not requests:
-        await query.edit_message_text(
-            "📨 Новых запросов нет.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not requests:
+await query.edit_message_text(
+"📨 Новых запросов нет.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    text = (
-        "📨 Запросы в магазин:\n\n"
-    )
+text = (
+"📨 Запросы в магазин:\n\n"
+)
 
-    buttons = []
+buttons = []
 
-    for request in requests:
-        sender = get_user(
-            request.get("sender_id")
-        )
+for request in requests:
+sender = get_user(
+request.get("sender_id")
+)
 
-        store = get_store(
-            request.get("store_id")
-        )
+store = get_store(    
+    request.get("store_id")    
+)    
 
-        sender_name = (
-            sender.get("first_name")
-            if sender
-            else "Пользователь"
-        )
+sender_name = (    
+    sender.get("first_name")    
+    if sender    
+    else "Пользователь"    
+)    
 
-        store_name = (
-            store.get("name")
-            if store
-            else "Магазин"
-        )
+store_name = (    
+    store.get("name")    
+    if store    
+    else "Магазин"    
+)    
 
-        text += (
-            f"👤 {sender_name}\n"
-            f"🏪 {store_name}\n\n"
-        )
+text += (    
+    f"👤 {sender_name}\n"    
+    f"🏪 {store_name}\n\n"    
+)    
 
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"👤 {sender_name}",
-                    callback_data=(
-                        f"request_info_{request['id']}"
-                    ),
-                )
-            ]
-        )
+buttons.append(    
+    [    
+        InlineKeyboardButton(    
+            f"👤 {sender_name}",    
+            callback_data=(    
+                f"request_info_{request['id']}"    
+            ),    
+        )    
+    ]    
+)
 
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="seller_menu",
-            )
-        ]
-    )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# APPROVE / REJECT REQUEST
-# ============================================================
+APPROVE / REJECT REQUEST
+
+============================================================
 
 async def approve_request(
-    update,
-    context,
-    request_id,
+update,
+context,
+request_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    requests = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "id": request_id,
-        },
-        limit=1,
-    )
+requests = db_select(
+"store_seller_requests",
+filters_dict={
+"id": request_id,
+},
+limit=1,
+)
 
-    if not requests:
-        await safe_query_answer(
-            query,
-            "Запрос не найден.",
-        )
-        return
+if not requests:
+await safe_query_answer(
+query,
+"Запрос не найден.",
+)
+return
 
-    request = requests[0]
+request = requests[0]
 
-    if request.get("status") != "pending":
-        await safe_query_answer(
-            query,
-            "Этот запрос уже обработан.",
-        )
-        return
+if request.get("status") != "pending":
+await safe_query_answer(
+query,
+"Этот запрос уже обработан.",
+)
+return
 
-    store_id = request.get(
-        "store_id"
-    )
+store_id = request.get(
+"store_id"
+)
 
-    # Запрос предназначен владельцу.
-    if request.get("receiver_id") != user_id:
-        await safe_query_answer(
-            query,
-            "Одобрить запрос может только владелец.",
-        )
-        return
+Запрос предназначен владельцу.
 
-    if not is_store_member(
-        user_id,
-        store_id,
-    ):
-        await safe_query_answer(
-            query,
-            "У тебя нет доступа к этому магазину.",
-        )
-        return
+if request.get("receiver_id") != user_id:
+await safe_query_answer(
+query,
+"Одобрить запрос может только владелец.",
+)
+return
 
-    requester_id = request.get(
-        "sender_id"
-    )
+if not is_store_member(
+user_id,
+store_id,
+):
+await safe_query_answer(
+query,
+"У тебя нет доступа к этому магазину.",
+)
+return
 
-    if not is_store_member(
-        requester_id,
-        store_id,
-    ):
-        db_insert(
-            "store_sellers",
-            {
-                "store_id": store_id,
-                "user_id": requester_id,
-            },
-        )
+requester_id = request.get(
+"sender_id"
+)
 
-    db_update(
-        "store_seller_requests",
-        {
-            "status": "accepted",
-        },
-        {
-            "id": request_id,
-        },
-    )
+if not is_store_member(
+requester_id,
+store_id,
+):
+db_insert(
+"store_sellers",
+{
+"store_id": store_id,
+"user_id": requester_id,
+},
+)
 
-    set_role(
-        requester_id,
-        "seller",
-    )
+db_update(
+"store_seller_requests",
+{
+"status": "accepted",
+},
+{
+"id": request_id,
+},
+)
 
-    store = get_store(store_id)
+set_role(
+requester_id,
+"seller",
+)
 
-    await query.edit_message_text(
-        "✅ Запрос одобрен.\n\n"
-        "Пользователь теперь продавец этого магазина."
-    )
+store = get_store(store_id)
 
-    await safe_query_answer(query)
+await query.edit_message_text(
+"✅ Запрос одобрен.\n\n"
+"Пользователь теперь продавец этого магазина."
+)
 
-    await notify_user(
-        context.bot,
-        requester_id,
-        (
-            "🎉 Твой запрос одобрен!\n\n"
-            f"🏪 Теперь ты продавец магазина "
-            f"«{store.get('name') if store else 'Магазин'}»."
-        ),
-    )
+await safe_query_answer(query)
 
+await notify_user(
+context.bot,
+requester_id,
+(
+"🎉 Твой запрос одобрен!\n\n"
+f"🏪 Теперь ты продавец магазина "
+f"«{store.get('name') if store else 'Магазин'}»."
+),
+)
 
 async def reject_request(
-    update,
-    context,
-    request_id,
+update,
+context,
+request_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    requests = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "id": request_id,
-        },
-        limit=1,
-    )
+requests = db_select(
+"store_seller_requests",
+filters_dict={
+"id": request_id,
+},
+limit=1,
+)
 
-    if not requests:
-        await safe_query_answer(
-            query,
-            "Запрос не найден.",
-        )
-        return
+if not requests:
+await safe_query_answer(
+query,
+"Запрос не найден.",
+)
+return
 
-    request = requests[0]
+request = requests[0]
 
-    if request.get("status") != "pending":
-        await safe_query_answer(
-            query,
-            "Этот запрос уже обработан.",
-        )
-        return
+if request.get("status") != "pending":
+await safe_query_answer(
+query,
+"Этот запрос уже обработан.",
+)
+return
 
-    if request.get("receiver_id") != user_id:
-        await safe_query_answer(
-            query,
-            "Отклонить запрос может только владелец.",
-        )
-        return
+if request.get("receiver_id") != user_id:
+await safe_query_answer(
+query,
+"Отклонить запрос может только владелец.",
+)
+return
 
-    store_id = request.get(
-        "store_id"
-    )
+store_id = request.get(
+"store_id"
+)
 
-    if not is_store_member(
-        user_id,
-        store_id,
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_store_member(
+user_id,
+store_id,
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    requester_id = request.get(
-        "sender_id"
-    )
+requester_id = request.get(
+"sender_id"
+)
 
-    db_update(
-        "store_seller_requests",
-        {
-            "status": "rejected",
-        },
-        {
-            "id": request_id,
-        },
-    )
+db_update(
+"store_seller_requests",
+{
+"status": "rejected",
+},
+{
+"id": request_id,
+},
+)
 
-    store = get_store(store_id)
+store = get_store(store_id)
 
-    await query.edit_message_text(
-        "❌ Запрос отклонён."
-    )
+await query.edit_message_text(
+"❌ Запрос отклонён."
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
-    await notify_user(
-        context.bot,
-        requester_id,
-        (
-            "❌ Твой запрос в магазин отклонён.\n\n"
-            f"🏪 {store.get('name') if store else 'Магазин'}\n\n"
-            "Ты остаёшься покупателем."
-        ),
-    )
+await notify_user(
+context.bot,
+requester_id,
+(
+"❌ Твой запрос в магазин отклонён.\n\n"
+f"🏪 {store.get('name') if store else 'Магазин'}\n\n"
+"Ты остаёшься покупателем."
+),
+)
 
+============================================================
 
-# ============================================================
-# ADD SELLER
-# ============================================================
+ADD SELLER
+
+============================================================
 
 async def add_seller(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    store = get_user_store(
-        user_id
-    )
+store = get_user_store(
+user_id
+)
 
-    if not store:
-        await safe_query_answer(
-            query,
-            "У тебя нет магазина.",
-        )
-        return
+if not store:
+await safe_query_answer(
+query,
+"У тебя нет магазина.",
+)
+return
 
-    context.user_data[
-        "awaiting_seller_username"
-    ] = True
+context.user_data[
+"awaiting_seller_username"
+] = True
 
-    await query.edit_message_text(
-        "➕ Добавить продавца\n\n"
-        "Отправь username друга в Telegram.\n"
-        "Например:\n"
-        "@username\n\n"
-        "Друг должен хотя бы один раз открыть VexMart "
-        "и нажать /start."
-    )
+await query.edit_message_text(
+"➕ Добавить продавца\n\n"
+"Отправь username друга в Telegram.\n"
+"Например:\n"
+"@username\n\n"
+"Друг должен хотя бы один раз открыть VexMart "
+"и нажать /start."
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def process_seller_username(
-    update,
-    context,
+update,
+context,
 ):
-    if not context.user_data.get(
-        "awaiting_seller_username"
-    ):
-        return False
+if not context.user_data.get(
+"awaiting_seller_username"
+):
+return False
 
-    context.user_data[
-        "awaiting_seller_username"
-    ] = False
+context.user_data[
+"awaiting_seller_username"
+] = False
 
-    username = update.message.text.strip()
+username = update.message.text.strip()
 
-    if username.startswith("@"):
-        username = username[1:]
+if username.startswith("@"):
+username = username[1:]
 
-    if not username:
-        await update.message.reply_text(
-            "❌ Username пустой."
-        )
-        return True
+if not username:
+await update.message.reply_text(
+"❌ Username пустой."
+)
+return True
 
-    current_user_id = (
-        update.effective_user.id
-    )
+current_user_id = (
+update.effective_user.id
+)
 
-    store = get_user_store(
-        current_user_id
-    )
+store = get_user_store(
+current_user_id
+)
 
-    if not store:
-        await update.message.reply_text(
-            "❌ У тебя нет магазина."
-        )
-        return True
+if not store:
+await update.message.reply_text(
+"❌ У тебя нет магазина."
+)
+return True
 
-    users = db_select(
-        "users",
-        filters_dict={
-            "username": username,
-        },
-        limit=1,
-    )
+users = db_select(
+"users",
+filters_dict={
+"username": username,
+},
+limit=1,
+)
 
-    if not users:
-        await update.message.reply_text(
-            "❌ Пользователь с таким username "
-            "не найден в VexMart.\n\n"
-            "Попроси друга сначала открыть бота "
-            "и нажать /start."
-        )
-        return True
+if not users:
+await update.message.reply_text(
+"❌ Пользователь с таким username "
+"не найден в VexMart.\n\n"
+"Попроси друга сначала открыть бота "
+"и нажать /start."
+)
+return True
 
-    friend = users[0]
+friend = users[0]
 
-    friend_id = friend["id"]
+friend_id = friend["id"]
 
-    if friend_id == current_user_id:
-        await update.message.reply_text(
-            "😄 Нельзя добавить самого себя."
-        )
-        return True
+if friend_id == current_user_id:
+await update.message.reply_text(
+"😄 Нельзя добавить самого себя."
+)
+return True
 
-    if is_store_member(
-        friend_id,
-        store["id"],
-    ):
-        await update.message.reply_text(
-            "ℹ️ Этот пользователь уже продавец "
-            "этого магазина."
-        )
-        return True
+if is_store_member(
+friend_id,
+store["id"],
+):
+await update.message.reply_text(
+"ℹ️ Этот пользователь уже продавец "
+"этого магазина."
+)
+return True
 
-    existing = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "store_id": store["id"],
-            "sender_id": current_user_id,
-            "receiver_id": friend_id,
-            "status": "pending",
-        },
-    )
+existing = db_select(
+"store_seller_requests",
+filters_dict={
+"store_id": store["id"],
+"sender_id": current_user_id,
+"receiver_id": friend_id,
+"status": "pending",
+},
+)
 
-    if existing:
-        await update.message.reply_text(
-            "📨 Приглашение уже отправлено."
-        )
-        return True
+if existing:
+await update.message.reply_text(
+"📨 Приглашение уже отправлено."
+)
+return True
 
-    created = db_insert(
-        "store_seller_requests",
-        {
-            "store_id": store["id"],
-            "sender_id": current_user_id,
-            "receiver_id": friend_id,
-            "status": "pending",
-        },
-    )
+created = db_insert(
+"store_seller_requests",
+{
+"store_id": store["id"],
+"sender_id": current_user_id,
+"receiver_id": friend_id,
+"status": "pending",
+},
+)
 
-    if not created:
-        await update.message.reply_text(
-            "❌ Не удалось создать приглашение."
-        )
-        return True
+if not created:
+await update.message.reply_text(
+"❌ Не удалось создать приглашение."
+)
+return True
 
-    request_id = created[0]["id"]
+request_id = created[0]["id"]
 
-    keyboard = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton(
-                "✅ Принять",
-                callback_data=(
-                    f"approve_invite_{request_id}"
-                ),
-            ),
-            InlineKeyboardButton(
-                "❌ Отклонить",
-                callback_data=(
-                    f"reject_invite_{request_id}"
-                ),
-            ),
-        ]]
-    )
+keyboard = InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"✅ Принять",
+callback_data=(
+f"approve_invite_{request_id}"
+),
+),
+InlineKeyboardButton(
+"❌ Отклонить",
+callback_data=(
+f"reject_invite_{request_id}"
+),
+),
+]]
+)
 
-    await notify_user(
-        context.bot,
-        friend_id,
-        (
-            "📨 Тебя приглашают стать продавцом!\n\n"
-            f"🏪 Магазин: {store.get('name')}\n"
-            f"👤 Пригласил: "
-            f"{update.effective_user.first_name or 'Продавец'}"
-        ),
-        keyboard,
-    )
+await notify_user(
+context.bot,
+friend_id,
+(
+"📨 Тебя приглашают стать продавцом!\n\n"
+f"🏪 Магазин: {store.get('name')}\n"
+f"👤 Пригласил: "
+f"{update.effective_user.first_name or 'Продавец'}"
+),
+keyboard,
+)
 
-    await update.message.reply_text(
-        "✅ Приглашение отправлено другу!"
-    )
+await update.message.reply_text(
+"✅ Приглашение отправлено другу!"
+)
 
-    return True
+return True
 
+============================================================
 
-# ============================================================
-# INVITE APPROVAL
-# ============================================================
+INVITE APPROVAL
+
+============================================================
 
 async def approve_invite(
-    update,
-    context,
-    request_id,
+update,
+context,
+request_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    requests = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "id": request_id,
-        },
-        limit=1,
-    )
+requests = db_select(
+"store_seller_requests",
+filters_dict={
+"id": request_id,
+},
+limit=1,
+)
 
-    if not requests:
-        await safe_query_answer(
-            query,
-            "Приглашение не найдено.",
-        )
-        return
+if not requests:
+await safe_query_answer(
+query,
+"Приглашение не найдено.",
+)
+return
 
-    request = requests[0]
+request = requests[0]
 
-    if request.get(
-        "receiver_id"
-    ) != user_id:
-        await safe_query_answer(
-            query,
-            "Это приглашение предназначено не тебе.",
-        )
-        return
+if request.get(
+"receiver_id"
+) != user_id:
+await safe_query_answer(
+query,
+"Это приглашение предназначено не тебе.",
+)
+return
 
-    if request.get(
-        "status"
-    ) != "pending":
-        await safe_query_answer(
-            query,
-            "Приглашение уже обработано.",
-        )
-        return
+if request.get(
+"status"
+) != "pending":
+await safe_query_answer(
+query,
+"Приглашение уже обработано.",
+)
+return
 
-    store_id = request["store_id"]
+store_id = request["store_id"]
 
-    if not is_store_member(
-        user_id,
-        store_id,
-    ):
-        db_insert(
-            "store_sellers",
-            {
-                "store_id": store_id,
-                "user_id": user_id,
-            },
-        )
+if not is_store_member(
+user_id,
+store_id,
+):
+db_insert(
+"store_sellers",
+{
+"store_id": store_id,
+"user_id": user_id,
+},
+)
 
-    db_update(
-        "store_seller_requests",
-        {
-            "status": "accepted",
-        },
-        {
-            "id": request_id,
-        },
-    )
+db_update(
+"store_seller_requests",
+{
+"status": "accepted",
+},
+{
+"id": request_id,
+},
+)
 
-    set_role(
-        user_id,
-        "seller",
-    )
+set_role(
+user_id,
+"seller",
+)
 
-    store = get_store(
-        store_id
-    )
+store = get_store(
+store_id
+)
 
-    await query.edit_message_text(
-        "🎉 Ты принял приглашение!\n\n"
-        f"Теперь ты продавец магазина "
-        f"«{store.get('name') if store else 'Магазин'}»."
-    )
+await query.edit_message_text(
+"🎉 Ты принял приглашение!\n\n"
+f"Теперь ты продавец магазина "
+f"«{store.get('name') if store else 'Магазин'}»."
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
-    await notify_user(
-        context.bot,
-        request.get(
-            "sender_id"
-        ),
-        (
-            "🎉 Приглашение принято!\n\n"
-            f"Пользователь "
-            f"{query.from_user.first_name or 'Пользователь'} "
-            f"теперь продавец магазина."
-        ),
-    )
-
+await notify_user(
+context.bot,
+request.get(
+"sender_id"
+),
+(
+"🎉 Приглашение принято!\n\n"
+f"Пользователь "
+f"{query.from_user.first_name or 'Пользователь'} "
+f"теперь продавец магазина."
+),
+)
 
 async def reject_invite(
-    update,
-    context,
-    request_id,
+update,
+context,
+request_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    requests = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "id": request_id,
-        },
-        limit=1,
-    )
+requests = db_select(
+"store_seller_requests",
+filters_dict={
+"id": request_id,
+},
+limit=1,
+)
 
-    if not requests:
-        await safe_query_answer(
-            query,
-            "Приглашение не найдено.",
-        )
-        return
+if not requests:
+await safe_query_answer(
+query,
+"Приглашение не найдено.",
+)
+return
 
-    request = requests[0]
+request = requests[0]
 
-    if request.get(
-        "receiver_id"
-    ) != user_id:
-        await safe_query_answer(
-            query,
-            "Это приглашение не для тебя.",
-        )
-        return
+if request.get(
+"receiver_id"
+) != user_id:
+await safe_query_answer(
+query,
+"Это приглашение не для тебя.",
+)
+return
 
-    if request.get(
-        "status"
-    ) != "pending":
-        await safe_query_answer(
-            query,
-            "Приглашение уже обработано.",
-        )
-        return
+if request.get(
+"status"
+) != "pending":
+await safe_query_answer(
+query,
+"Приглашение уже обработано.",
+)
+return
 
-    db_update(
-        "store_seller_requests",
-        {
-            "status": "rejected",
-        },
-        {
-            "id": request_id,
-        },
-    )
+db_update(
+"store_seller_requests",
+{
+"status": "rejected",
+},
+{
+"id": request_id,
+},
+)
 
-    await query.edit_message_text(
-        "❌ Ты отклонил приглашение.\n\n"
-        "Ты остаёшься покупателем."
-    )
+await query.edit_message_text(
+"❌ Ты отклонил приглашение.\n\n"
+"Ты остаёшься покупателем."
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
-    await notify_user(
-        context.bot,
-        request.get(
-            "sender_id"
-        ),
-        "❌ Пользователь отклонил приглашение "
-        "стать продавцом.",
-    )
+await notify_user(
+context.bot,
+request.get(
+"sender_id"
+),
+"❌ Пользователь отклонил приглашение "
+"стать продавцом.",
+)
 
+============================================================
 
-# ============================================================
-# PRODUCTS
-# ============================================================
+PRODUCTS
+
+============================================================
 
 async def show_product(
-    update,
-    context,
-    product_id,
+update,
+context,
+product_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    product = get_product(
-        product_id
-    )
+product = get_product(
+product_id
+)
 
-    if not product:
-        await safe_query_answer(
-            query,
-            "Товар не найден.",
-        )
-        return
+if not product:
+await safe_query_answer(
+query,
+"Товар не найден.",
+)
+return
 
-    title = product_title(
-        product
-    )
+title = product_title(
+product
+)
 
-    text = (
-        f"📦 {title}\n\n"
-        f"{product.get('description') or 'Описание отсутствует.'}\n\n"
-        f"💰 Цена: {product.get('price', 0)} ₽\n"
-        f"📦 Остаток: {product.get('stock', 0)}"
-    )
+text = (
+f"📦 {title}\n\n"
+f"{product.get('description') or 'Описание отсутствует.'}\n\n"
+f"💰 Цена: {product.get('price', 0)} ₽\n"
+f"📦 Остаток: {product.get('stock', 0)}"
+)
 
-    if product.get("cashback"):
-        text += (
-            f"\n💸 Кэшбэк: "
-            f"{product.get('cashback')} ₽"
-        )
+if product.get("cashback"):
+text += (
+f"\n💸 Кэшбэк: "
+f"{product.get('cashback')} ₽"
+)
 
-    buttons = []
+buttons = []
 
-    if product.get("stock", 0) > 0:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🛒 Купить",
-                    callback_data=f"buy_{product_id}",
-                ),
-                InlineKeyboardButton(
-                    "➕ В корзину",
-                    callback_data=f"addcart_{product_id}",
-                ),
-            ]
-        )
+if product.get("stock", 0) > 0:
+buttons.append(
+[
+InlineKeyboardButton(
+"🛒 Купить",
+callback_data=f"buy_{product_id}",
+),
+InlineKeyboardButton(
+"➕ В корзину",
+callback_data=f"addcart_{product_id}",
+),
+]
+)
 
-    store_id = product.get(
-        "store_id"
-    )
+store_id = product.get(
+"store_id"
+)
 
-    if store_id:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🏪 Открыть магазин",
-                    callback_data=(
-                        f"store_{store_id}"
-                    ),
-                )
-            ]
-        )
+if store_id:
+buttons.append(
+[
+InlineKeyboardButton(
+"🏪 Открыть магазин",
+callback_data=(
+f"store_{store_id}"
+),
+)
+]
+)
 
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data=(
-                    f"store_{store_id}"
-                    if store_id
-                    else "stores"
-                ),
-            )
-        ]
-    )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data=(
+f"store_{store_id}"
+if store_id
+else "stores"
+),
+)
+]
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# CART
-# ============================================================
+CART
+
+============================================================
 
 async def add_to_cart(
-    update,
-    context,
-    product_id,
+update,
+context,
+product_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    product = get_product(
-        product_id
-    )
+product = get_product(
+product_id
+)
 
-    if not product:
-        await safe_query_answer(
-            query,
-            "Товар не найден.",
-        )
-        return
+if not product:
+await safe_query_answer(
+query,
+"Товар не найден.",
+)
+return
 
-    if product.get(
-        "stock",
-        0
-    ) <= 0:
-        await safe_query_answer(
-            query,
-            "Товар закончился.",
-        )
-        return
+if product.get(
+"stock",
+0
+) <= 0:
+await safe_query_answer(
+query,
+"Товар закончился.",
+)
+return
 
-    existing = db_select(
-        "cart",
-        filters_dict={
-            "user_id": user_id,
-            "product_id": product_id,
-        },
-        limit=1,
-    )
+existing = db_select(
+"cart",
+filters_dict={
+"user_id": user_id,
+"product_id": product_id,
+},
+limit=1,
+)
 
-    if existing:
-        db_update(
-            "cart",
-            {
-                "quantity":
-                    existing[0].get(
-                        "quantity",
-                        1,
-                    ) + 1
-            },
-            {
-                "id": existing[0]["id"],
-            },
-        )
+if existing:
+db_update(
+"cart",
+{
+"quantity":
+existing[0].get(
+"quantity",
+1,
+) + 1
+},
+{
+"id": existing[0]["id"],
+},
+)
 
-    else:
-        db_insert(
-            "cart",
-            {
-                "user_id": user_id,
-                "product_id": product_id,
-                "quantity": 1,
-            },
-        )
+else:
+db_insert(
+"cart",
+{
+"user_id": user_id,
+"product_id": product_id,
+"quantity": 1,
+},
+)
 
-    await safe_query_answer(
-        query,
-        "✅ Добавлено в корзину!",
-    )
-
+await safe_query_answer(
+query,
+"✅ Добавлено в корзину!",
+)
 
 async def show_cart(
-    update,
-    context,
-    acknowledge=True,
+update,
+context,
+acknowledge=True,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    rows = db_select(
-        "cart",
-        filters_dict={
-            "user_id": user_id,
-        },
-    )
+rows = db_select(
+"cart",
+filters_dict={
+"user_id": user_id,
+},
+)
 
-    if not rows:
-        await query.edit_message_text(
-            "🛒 Корзина пуста.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu",
-                    )
-                ]]
-            ),
-        )
+if not rows:
+await query.edit_message_text(
+"🛒 Корзина пуста.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-        if acknowledge:
-            await safe_query_answer(query)
+if acknowledge:    
+    await safe_query_answer(query)    
 
-        return
+return
 
-    total = 0
+total = 0
 
-    text = (
-        "🛒 Корзина:\n\n"
-    )
+text = (
+"🛒 Корзина:\n\n"
+)
 
-    for row in rows:
-        product = get_product(
-            row.get("product_id")
-        )
+for row in rows:
+product = get_product(
+row.get("product_id")
+)
 
-        if not product:
-            continue
+if not product:    
+    continue    
 
-        quantity = row.get(
-            "quantity",
-            1,
-        )
+quantity = row.get(    
+    "quantity",    
+    1,    
+)    
 
-        price = product.get(
-            "price",
-            0,
-        )
+price = product.get(    
+    "price",    
+    0,    
+)    
 
-        subtotal = (
-            price * quantity
-        )
+subtotal = (    
+    price * quantity    
+)    
 
-        total += subtotal
+total += subtotal    
 
-        text += (
-            f"📦 {product.get('name')}\n"
-            f"{price} ₽ × {quantity} = "
-            f"{subtotal} ₽\n\n"
-        )
+text += (    
+    f"📦 {product.get('name')}\n"    
+    f"{price} ₽ × {quantity} = "    
+    f"{subtotal} ₽\n\n"    
+)
 
-    text += (
-        f"💰 Итого: {total} ₽"
-    )
+text += (
+f"💰 Итого: {total} ₽"
+)
 
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "💳 Оформить заказ",
-                callback_data="checkout_cart",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🗑 Очистить корзину",
-                callback_data="clear_cart",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="back_menu",
-            )
-        ],
-    ]
+buttons = [
+[
+InlineKeyboardButton(
+"💳 Оформить заказ",
+callback_data="checkout_cart",
+)
+],
+[
+InlineKeyboardButton(
+"🗑 Очистить корзину",
+callback_data="clear_cart",
+)
+],
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+],
+]
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    if acknowledge:
-        await safe_query_answer(query)
-
+if acknowledge:
+await safe_query_answer(query)
 
 async def clear_cart(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    db_delete(
-        "cart",
-        {
-            "user_id":
-                query.from_user.id,
-        },
-    )
+db_delete(
+"cart",
+{
+"user_id":
+query.from_user.id,
+},
+)
 
-    await safe_query_answer(
-        query,
-        "🗑 Корзина очищена.",
-    )
+await safe_query_answer(
+query,
+"🗑 Корзина очищена.",
+)
 
-    await show_cart(
-        update,
-        context,
-        acknowledge=False,
-    )
+await show_cart(
+update,
+context,
+acknowledge=False,
+)
 
+============================================================
 
-# ============================================================
-# BUY PRODUCT
-# ============================================================
+BUY PRODUCT
+
+============================================================
 
 async def buy_product(
-    update,
-    context,
-    product_id,
+update,
+context,
+product_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    product = get_product(
-        product_id
-    )
+product = get_product(
+product_id
+)
 
-    if not product:
-        await safe_query_answer(
-            query,
-            "Товар не найден.",
-        )
-        return
+if not product:
+await safe_query_answer(
+query,
+"Товар не найден.",
+)
+return
 
-    stock = product.get(
-        "stock",
-        0,
-    )
+stock = product.get(
+"stock",
+0,
+)
 
-    if stock <= 0:
-        await safe_query_answer(
-            query,
-            "Товар закончился.",
-        )
-        return
+if stock <= 0:
+await safe_query_answer(
+query,
+"Товар закончился.",
+)
+return
 
-    price = product.get(
-        "price",
-        0,
-    )
+price = product.get(
+"price",
+0,
+)
 
-    user = get_user(
-        user_id
-    )
+user = get_user(
+user_id
+)
 
-    if not user:
-        await safe_query_answer(
-            query,
-            "Профиль не найден.",
-        )
-        return
+if not user:
+await safe_query_answer(
+query,
+"Профиль не найден.",
+)
+return
 
-    balance = user.get(
-        "balance",
-        0,
-    )
+balance = user.get(
+"balance",
+0,
+)
 
-    if balance < price:
-        await safe_query_answer(
-            query,
-            f"Недостаточно денег. "
-            f"Баланс: {balance} ₽",
-        )
-        return
+if balance < price:
+await safe_query_answer(
+query,
+f"Недостаточно денег. "
+f"Баланс: {balance} ₽",
+)
+return
 
-    store_id = product.get(
-        "store_id"
-    )
+store_id = product.get(
+"store_id"
+)
 
-    store = (
-        get_store(store_id)
-        if store_id
-        else None
-    )
+store = (
+get_store(store_id)
+if store_id
+else None
+)
 
-    seller_id = (
-        store.get("owner_id")
-        if store
-        else None
-    )
+seller_id = (
+store.get("owner_id")
+if store
+else None
+)
 
-    db_update(
-        "users",
-        {
-            "balance":
-                balance - price,
-        },
-        {
-            "id": user_id,
-        },
-    )
+db_update(
+"users",
+{
+"balance":
+balance - price,
+},
+{
+"id": user_id,
+},
+)
 
-    db_update(
-        "products",
-        {
-            "stock":
-                stock - 1,
-        },
-        {
-            "id": product_id,
-        },
-    )
+db_update(
+"products",
+{
+"stock":
+stock - 1,
+},
+{
+"id": product_id,
+},
+)
 
-    db_insert(
-        "orders",
-        {
-            "user_id": user_id,
-            "product_id": product_id,
-            "quantity": 1,
-            "total_price": price,
-            "status": "pending",
-            "store_id": store_id,
-            "buyer_id": user_id,
-            "seller_id": seller_id,
-            "product_name":
-                product.get("name"),
-            "price": price,
-            "cashback":
-                product.get(
-                    "cashback",
-                    0,
-                ),
-        },
-    )
+db_insert(
+"orders",
+{
+"user_id": user_id,
+"product_id": product_id,
+"quantity": 1,
+"total_price": price,
+"status": "pending",
+"store_id": store_id,
+"buyer_id": user_id,
+"seller_id": seller_id,
+"product_name":
+product.get("name"),
+"price": price,
+"cashback":
+product.get(
+"cashback",
+0,
+),
+},
+)
 
-    await safe_query_answer(
-        query,
-        "✅ Покупка оформлена!",
-    )
+await safe_query_answer(
+query,
+"✅ Покупка оформлена!",
+)
 
-    await query.edit_message_text(
-        "✅ Заказ оформлен!\n\n"
-        f"📦 {product.get('name')}\n"
-        f"💰 {price} ₽\n\n"
-        "Продавец получил уведомление.",
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "📦 Мои заказы",
-                    callback_data="buyer_orders",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+"✅ Заказ оформлен!\n\n"
+f"📦 {product.get('name')}\n"
+f"💰 {price} ₽\n\n"
+"Продавец получил уведомление.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"📦 Мои заказы",
+callback_data="buyer_orders",
+)
+]]
+),
+)
 
-    if store and seller_id:
-        await notify_user(
-            context.bot,
-            seller_id,
-            (
-                "🛒 Новый заказ!\n\n"
-                f"📦 {product.get('name')}\n"
-                f"💰 {price} ₽\n"
-                f"👤 Покупатель: "
-                f"{query.from_user.first_name or 'Покупатель'}"
-            ),
-        )
+if store and seller_id:
+await notify_user(
+context.bot,
+seller_id,
+(
+"🛒 Новый заказ!\n\n"
+f"📦 {product.get('name')}\n"
+f"💰 {price} ₽\n"
+f"👤 Покупатель: "
+f"{query.from_user.first_name or 'Покупатель'}"
+),
+)
 
+============================================================
 
-# ============================================================
-# BUYER ORDERS
-# ============================================================
+BUYER ORDERS
+
+============================================================
 
 async def buyer_orders(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    orders = db_select(
-        "orders",
-        filters_dict={
-            "buyer_id": user_id,
-        },
-        order_by="created_at",
-        ascending=False,
-    )
+orders = db_select(
+"orders",
+filters_dict={
+"buyer_id": user_id,
+},
+order_by="created_at",
+ascending=False,
+)
 
-    if not orders:
-        await query.edit_message_text(
-            "📦 У тебя пока нет заказов.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu",
-                    )
-                ]]
-            ),
-        )
+if not orders:
+await query.edit_message_text(
+"📦 У тебя пока нет заказов.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    status_text = {
-        "pending":
-            "⏳ Ожидает",
-        "accepted":
-            "✅ Принят",
-        "completed":
-            "🎉 Выполнен",
-        "cancelled":
-            "❌ Отменён",
-    }
+status_text = {
+"pending":
+"⏳ Ожидает",
+"accepted":
+"✅ Принят",
+"completed":
+"🎉 Выполнен",
+"cancelled":
+"❌ Отменён",
+}
 
-    text = (
-        "📦 Мои заказы:\n\n"
-    )
+text = (
+"📦 Мои заказы:\n\n"
+)
 
-    for order in orders:
-        status = order.get(
-            "status",
-            "pending",
-        )
+for order in orders:
+status = order.get(
+"status",
+"pending",
+)
 
-        text += (
-            f"#{order.get('id')} — "
-            f"{order.get('product_name') or 'Товар'}\n"
-            f"💰 {order.get('total_price', 0)} ₽\n"
-            f"{status_text.get(status, status)}\n\n"
-        )
+text += (    
+    f"#{order.get('id')} — "    
+    f"{order.get('product_name') or 'Товар'}\n"    
+    f"💰 {order.get('total_price', 0)} ₽\n"    
+    f"{status_text.get(status, status)}\n\n"    
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# SELLER ORDERS
-# ============================================================
+SELLER ORDERS
+
+============================================================
 
 async def seller_orders(
-    update,
-    context,
-    acknowledge=True,
+update,
+context,
+acknowledge=True,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    stores = get_user_stores(
-        user_id
-    )
+stores = get_user_stores(
+user_id
+)
 
-    store_ids = {
-        store["id"]
-        for store in stores
-    }
+store_ids = {
+store["id"]
+for store in stores
+}
 
-    if not store_ids:
-        await query.edit_message_text(
-            "🏪 У тебя нет магазина.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not store_ids:
+await query.edit_message_text(
+"🏪 У тебя нет магазина.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        if acknowledge:
-            await safe_query_answer(query)
+if acknowledge:    
+    await safe_query_answer(query)    
 
-        return
+return
 
-    all_orders = db_select(
-        "orders",
-        order_by="created_at",
-        ascending=False,
-    )
+all_orders = db_select(
+"orders",
+order_by="created_at",
+ascending=False,
+)
 
-    orders = [
-        order
-        for order in all_orders
-        if order.get("store_id")
-        in store_ids
-    ]
+orders = [
+order
+for order in all_orders
+if order.get("store_id")
+in store_ids
+]
 
-    if not orders:
-        await query.edit_message_text(
-            "🛒 Заказов пока нет.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not orders:
+await query.edit_message_text(
+"🛒 Заказов пока нет.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        if acknowledge:
-            await safe_query_answer(query)
+if acknowledge:    
+    await safe_query_answer(query)    
 
-        return
+return
 
-    text = (
-        "🛒 Заказы магазина:\n\n"
-    )
+text = (
+"🛒 Заказы магазина:\n\n"
+)
 
-    buttons = []
+buttons = []
 
-    for order in orders:
-        text += (
-            f"#{order.get('id')} — "
-            f"{order.get('product_name') or 'Товар'}\n"
-            f"💰 {order.get('total_price', 0)} ₽\n"
-            f"Статус: {order.get('status')}\n\n"
-        )
+for order in orders:
+text += (
+f"#{order.get('id')} — "
+f"{order.get('product_name') or 'Товар'}\n"
+f"💰 {order.get('total_price', 0)} ₽\n"
+f"Статус: {order.get('status')}\n\n"
+)
 
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"📦 Заказ #{order.get('id')}",
-                    callback_data=(
-                        f"seller_order_{order['id']}"
-                    ),
-                )
-            ]
-        )
+buttons.append(    
+    [    
+        InlineKeyboardButton(    
+            f"📦 Заказ #{order.get('id')}",    
+            callback_data=(    
+                f"seller_order_{order['id']}"    
+            ),    
+        )    
+    ]    
+)
 
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="seller_menu",
-            )
-        ]
-    )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    if acknowledge:
-        await safe_query_answer(query)
-
+if acknowledge:
+await safe_query_answer(query)
 
 async def seller_order_details(
-    update,
-    context,
-    order_id,
-    acknowledge=True,
+update,
+context,
+order_id,
+acknowledge=True,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    orders = db_select(
-        "orders",
-        filters_dict={
-            "id": order_id,
-        },
-        limit=1,
-    )
+orders = db_select(
+"orders",
+filters_dict={
+"id": order_id,
+},
+limit=1,
+)
 
-    if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
-        return
+if not orders:
+await safe_query_answer(
+query,
+"Заказ не найден.",
+)
+return
 
-    order = orders[0]
+order = orders[0]
 
-    store_id = order.get(
-        "store_id"
-    )
+store_id = order.get(
+"store_id"
+)
 
-    if (
-        not store_id
-        or not is_store_member(
-            user_id,
-            store_id,
-        )
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа к этому заказу.",
-        )
-        return
+if (
+not store_id
+or not is_store_member(
+user_id,
+store_id,
+)
+):
+await safe_query_answer(
+query,
+"Нет доступа к этому заказу.",
+)
+return
 
-    buyer = get_user(
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
+buyer = get_user(
+order.get("buyer_id")
+or order.get("user_id")
+)
 
-    buyer_name = (
-        buyer.get("first_name")
-        if buyer
-        else "Покупатель"
-    )
+buyer_name = (
+buyer.get("first_name")
+if buyer
+else "Покупатель"
+)
 
-    status = order.get(
-        "status",
-        "pending",
-    )
+status = order.get(
+"status",
+"pending",
+)
 
-    text = (
-        f"📦 Заказ #{order.get('id')}\n\n"
-        f"Товар: "
-        f"{order.get('product_name') or 'Товар'}\n"
-        f"Количество: "
-        f"{order.get('quantity', 1)}\n"
-        f"Сумма: "
-        f"{order.get('total_price', 0)} ₽\n"
-        f"Покупатель: {buyer_name}\n"
-        f"Статус: {status}"
-    )
+text = (
+f"📦 Заказ #{order.get('id')}\n\n"
+f"Товар: "
+f"{order.get('product_name') or 'Товар'}\n"
+f"Количество: "
+f"{order.get('quantity', 1)}\n"
+f"Сумма: "
+f"{order.get('total_price', 0)} ₽\n"
+f"Покупатель: {buyer_name}\n"
+f"Статус: {status}"
+)
 
-    buttons = []
+buttons = []
 
-    if status == "pending":
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "✅ Принять заказ",
-                    callback_data=(
-                        f"accept_order_{order_id}"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "❌ Отменить",
-                    callback_data=(
-                        f"cancel_order_{order_id}"
-                    ),
-                ),
-            ]
-        )
+if status == "pending":
+buttons.append(
+[
+InlineKeyboardButton(
+"✅ Принять заказ",
+callback_data=(
+f"accept_order_{order_id}"
+),
+),
+InlineKeyboardButton(
+"❌ Отменить",
+callback_data=(
+f"cancel_order_{order_id}"
+),
+),
+]
+)
 
-    if status == "accepted":
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🎉 Выполнить",
-                    callback_data=(
-                        f"complete_order_{order_id}"
-                    ),
-                )
-            ]
-        )
+if status == "accepted":
+buttons.append(
+[
+InlineKeyboardButton(
+"🎉 Выполнить",
+callback_data=(
+f"complete_order_{order_id}"
+),
+)
+]
+)
 
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Заказы",
-                callback_data="seller_orders",
-            )
-        ]
-    )
+buttons.append(
+[
+InlineKeyboardButton(
+"⬅️ Заказы",
+callback_data="seller_orders",
+)
+]
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    if acknowledge:
-        await safe_query_answer(query)
-
+if acknowledge:
+await safe_query_answer(query)
 
 async def accept_order(
-    update,
-    context,
-    order_id,
+update,
+context,
+order_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    orders = db_select(
-        "orders",
-        filters_dict={
-            "id": order_id,
-        },
-        limit=1,
-    )
+orders = db_select(
+"orders",
+filters_dict={
+"id": order_id,
+},
+limit=1,
+)
 
-    if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
-        return
+if not orders:
+await safe_query_answer(
+query,
+"Заказ не найден.",
+)
+return
 
-    order = orders[0]
+order = orders[0]
 
-    store_id = order.get(
-        "store_id"
-    )
+store_id = order.get(
+"store_id"
+)
 
-    if (
-        not store_id
-        or not is_store_member(
-            user_id,
-            store_id,
-        )
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if (
+not store_id
+or not is_store_member(
+user_id,
+store_id,
+)
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    if order.get(
-        "status"
-    ) != "pending":
-        await safe_query_answer(
-            query,
-            "Заказ уже обработан.",
-        )
-        return
+if order.get(
+"status"
+) != "pending":
+await safe_query_answer(
+query,
+"Заказ уже обработан.",
+)
+return
 
-    db_update(
-        "orders",
-        {
-            "status": "accepted",
-            "seller_id": user_id,
-        },
-        {
-            "id": order_id,
-        },
-    )
+db_update(
+"orders",
+{
+"status": "accepted",
+"seller_id": user_id,
+},
+{
+"id": order_id,
+},
+)
 
-    await safe_query_answer(
-        query,
-        "✅ Заказ принят!",
-    )
+await safe_query_answer(
+query,
+"✅ Заказ принят!",
+)
 
-    await seller_order_details(
-        update,
-        context,
-        order_id,
-        acknowledge=False,
-    )
+await seller_order_details(
+update,
+context,
+order_id,
+acknowledge=False,
+)
 
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
+buyer_id = (
+order.get("buyer_id")
+or order.get("user_id")
+)
 
-    await notify_user(
-        context.bot,
-        buyer_id,
-        (
-            "✅ Продавец принял твой заказ!\n\n"
-            f"📦 {order.get('product_name') or 'Товар'}"
-        ),
-    )
-
+await notify_user(
+context.bot,
+buyer_id,
+(
+"✅ Продавец принял твой заказ!\n\n"
+f"📦 {order.get('product_name') or 'Товар'}"
+),
+)
 
 async def cancel_order(
-    update,
-    context,
-    order_id,
+update,
+context,
+order_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    orders = db_select(
-        "orders",
-        filters_dict={
-            "id": order_id,
-        },
-        limit=1,
-    )
+orders = db_select(
+"orders",
+filters_dict={
+"id": order_id,
+},
+limit=1,
+)
 
-    if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
-        return
+if not orders:
+await safe_query_answer(
+query,
+"Заказ не найден.",
+)
+return
 
-    order = orders[0]
+order = orders[0]
 
-    if not is_store_member(
-        user_id,
-        order.get("store_id"),
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_store_member(
+user_id,
+order.get("store_id"),
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    if order.get(
-        "status"
-    ) != "pending":
-        await safe_query_answer(
-            query,
-            "Нельзя отменить этот заказ.",
-        )
-        return
+if order.get(
+"status"
+) != "pending":
+await safe_query_answer(
+query,
+"Нельзя отменить этот заказ.",
+)
+return
 
-    db_update(
-        "orders",
-        {
-            "status": "cancelled",
-            "seller_id": user_id,
-        },
-        {
-            "id": order_id,
-        },
-    )
+db_update(
+"orders",
+{
+"status": "cancelled",
+"seller_id": user_id,
+},
+{
+"id": order_id,
+},
+)
 
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
+buyer_id = (
+order.get("buyer_id")
+or order.get("user_id")
+)
 
-    await notify_user(
-        context.bot,
-        buyer_id,
-        (
-            "❌ Твой заказ отменён продавцом.\n\n"
-            f"📦 {order.get('product_name') or 'Товар'}"
-        ),
-    )
+await notify_user(
+context.bot,
+buyer_id,
+(
+"❌ Твой заказ отменён продавцом.\n\n"
+f"📦 {order.get('product_name') or 'Товар'}"
+),
+)
 
-    await safe_query_answer(
-        query,
-        "❌ Заказ отменён.",
-    )
+await safe_query_answer(
+query,
+"❌ Заказ отменён.",
+)
 
-    await seller_orders(
-        update,
-        context,
-        acknowledge=False,
-    )
-
+await seller_orders(
+update,
+context,
+acknowledge=False,
+)
 
 async def complete_order(
-    update,
-    context,
-    order_id,
+update,
+context,
+order_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    orders = db_select(
-        "orders",
-        filters_dict={
-            "id": order_id,
-        },
-        limit=1,
-    )
+orders = db_select(
+"orders",
+filters_dict={
+"id": order_id,
+},
+limit=1,
+)
 
-    if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
-        return
+if not orders:
+await safe_query_answer(
+query,
+"Заказ не найден.",
+)
+return
 
-    order = orders[0]
+order = orders[0]
 
-    if not is_store_member(
-        user_id,
-        order.get("store_id"),
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_store_member(
+user_id,
+order.get("store_id"),
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    if order.get(
-        "status"
-    ) != "accepted":
-        await safe_query_answer(
-            query,
-            "Заказ ещё не принят.",
-        )
-        return
+if order.get(
+"status"
+) != "accepted":
+await safe_query_answer(
+query,
+"Заказ ещё не принят.",
+)
+return
 
-    db_update(
-        "orders",
-        {
-            "status": "completed",
-        },
-        {
-            "id": order_id,
-        },
-    )
+db_update(
+"orders",
+{
+"status": "completed",
+},
+{
+"id": order_id,
+},
+)
 
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
+buyer_id = (
+order.get("buyer_id")
+or order.get("user_id")
+)
 
-    await notify_user(
-        context.bot,
-        buyer_id,
-        (
-            "🎉 Твой заказ выполнен!\n\n"
-            f"📦 {order.get('product_name') or 'Товар'}"
-        ),
-    )
+await notify_user(
+context.bot,
+buyer_id,
+(
+"🎉 Твой заказ выполнен!\n\n"
+f"📦 {order.get('product_name') or 'Товар'}"
+),
+)
 
-    await safe_query_answer(
-        query,
-        "🎉 Заказ выполнен!",
-    )
+await safe_query_answer(
+query,
+"🎉 Заказ выполнен!",
+)
 
-    await seller_orders(
-        update,
-        context,
-        acknowledge=False,
-    )
+await seller_orders(
+update,
+context,
+acknowledge=False,
+)
 
+============================================================
 
-# ============================================================
-# MY STORE
-# ============================================================
+MY STORE
+
+============================================================
 
 async def my_store(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    store = get_user_store(
-        user_id
-    )
+store = get_user_store(
+user_id
+)
 
-    if not store:
-        await query.edit_message_text(
-            "🏪 У тебя пока нет магазина.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not store:
+await query.edit_message_text(
+"🏪 У тебя пока нет магазина.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    store_id = store["id"]
+store_id = store["id"]
 
-    members = get_store_member_ids(
-        store_id
-    )
+members = get_store_member_ids(
+store_id
+)
 
-    text = (
-        f"🏪 {store.get('name')}\n\n"
-        f"{store.get('description') or 'Описание отсутствует.'}\n\n"
-        f"👥 Продавцов: {len(members)}"
-    )
+text = (
+f"🏪 {store.get('name')}\n\n"
+f"{store.get('description') or 'Описание отсутствует.'}\n\n"
+f"👥 Продавцов: {len(members)}"
+)
 
-    if store.get("address"):
-        text += (
-            f"\n📍 {store.get('address')}"
-        )
+if store.get("address"):
+text += (
+f"\n📍 {store.get('address')}"
+)
 
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "👥 Продавцы",
-                callback_data=(
-                    f"store_sellers_{store_id}"
-                ),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 Товары магазина",
-                callback_data=(
-                    f"store_{store_id}"
-                ),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "➕ Добавить продавца",
-                callback_data="add_seller",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📨 Запросы",
-                callback_data="seller_requests",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="seller_menu",
-            )
-        ],
-    ]
+buttons = [
+[
+InlineKeyboardButton(
+"👥 Продавцы",
+callback_data=(
+f"store_sellers_{store_id}"
+),
+)
+],
+[
+InlineKeyboardButton(
+"📦 Товары магазина",
+callback_data=(
+f"store_{store_id}"
+),
+)
+],
+[
+InlineKeyboardButton(
+"➕ Добавить продавца",
+callback_data="add_seller",
+)
+],
+[
+InlineKeyboardButton(
+"📨 Запросы",
+callback_data="seller_requests",
+)
+],
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+],
+]
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def store_sellers(
-    update,
-    context,
-    store_id,
+update,
+context,
+store_id,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    store = get_store(
-        store_id
+store = get_store(
+store_id
+)
+
+if not store:
+await safe_query_answer(
+query,
+"Магазин не найден.",
+)
+return
+
+if not is_store_member(
+query.from_user.id,
+store_id,
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
+
+text = (
+f"👥 Продавцы магазина "
+f"«{store.get('name')}»:\n\n"
+)
+
+members = get_store_member_ids(
+store_id
+)
+
+for member_id in members:
+member = get_user(
+member_id
+)
+
+if not member:    
+    continue    
+
+name = (    
+    member.get("first_name")    
+    or "Без имени"    
+)    
+
+username = member.get(    
+    "username"    
+)    
+
+if username:    
+    name += (    
+        f" (@{username})"    
+    )    
+
+if member_id == store.get(    
+    "owner_id"    
+):    
+    text += (    
+        f"👑 {name} — владелец\n"    
+    )    
+else:    
+    text += (    
+        f"👤 {name}\n"    
     )
 
-    if not store:
-        await safe_query_answer(
-            query,
-            "Магазин не найден.",
-        )
-        return
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="my_store",
+)
+]]
+),
+)
 
-    if not is_store_member(
-        query.from_user.id,
-        store_id,
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+await safe_query_answer(query)
 
-    text = (
-        f"👥 Продавцы магазина "
-        f"«{store.get('name')}»:\n\n"
-    )
+============================================================
 
-    members = get_store_member_ids(
-        store_id
-    )
+STORE STATS
 
-    for member_id in members:
-        member = get_user(
-            member_id
-        )
-
-        if not member:
-            continue
-
-        name = (
-            member.get("first_name")
-            or "Без имени"
-        )
-
-        username = member.get(
-            "username"
-        )
-
-        if username:
-            name += (
-                f" (@{username})"
-            )
-
-        if member_id == store.get(
-            "owner_id"
-        ):
-            text += (
-                f"👑 {name} — владелец\n"
-            )
-        else:
-            text += (
-                f"👤 {name}\n"
-            )
-
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="my_store",
-                )
-            ]]
-        ),
-    )
-
-    await safe_query_answer(query)
-
-
-# ============================================================
-# STORE STATS
-# ============================================================
+============================================================
 
 async def store_stats(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    await safe_query_answer(
-        query,
-        "📊 Статистика магазина пока недоступна.",
-    )
+await safe_query_answer(
+query,
+"📊 Статистика магазина пока недоступна.",
+)
 
+============================================================
 
-# ============================================================
-# TASKS
-# ============================================================
+TASKS
+
+============================================================
 
 async def show_tasks(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    tasks = db_select(
-        "tasks",
-        filters_dict={
-            "user_id": user_id,
-        },
-    )
+tasks = db_select(
+"tasks",
+filters_dict={
+"user_id": user_id,
+},
+)
 
-    if not tasks:
-        default_tasks = [
-            (
-                "Открыть магазин",
-                10,
-            ),
-            (
-                "Посмотреть товар",
-                5,
-            ),
-            (
-                "Посетить VexMart",
-                15,
-            ),
-        ]
+if not tasks:
+default_tasks = [
+(
+"Открыть магазин",
+10,
+),
+(
+"Посмотреть товар",
+5,
+),
+(
+"Посетить VexMart",
+15,
+),
+]
 
-        for task_name, reward in default_tasks:
-            db_insert(
-                "tasks",
-                {
-                    "user_id": user_id,
-                    "task": task_name,
-                    "reward": reward,
-                    "completed": False,
-                },
-            )
+for task_name, reward in default_tasks:    
+    db_insert(    
+        "tasks",    
+        {    
+            "user_id": user_id,    
+            "task": task_name,    
+            "reward": reward,    
+            "completed": False,    
+        },    
+    )    
 
-        tasks = db_select(
-            "tasks",
-            filters_dict={
-                "user_id": user_id,
-            },
-        )
+tasks = db_select(    
+    "tasks",    
+    filters_dict={    
+        "user_id": user_id,    
+    },    
+)
 
-    text = (
-        "📋 Задания:\n\n"
-    )
+text = (
+"📋 Задания:\n\n"
+)
 
-    for task in tasks:
-        mark = (
-            "✅"
-            if task.get("completed")
-            else "⬜"
-        )
+for task in tasks:
+mark = (
+"✅"
+if task.get("completed")
+else "⬜"
+)
 
-        text += (
-            f"{mark} {task.get('task')}\n"
-            f"💰 Награда: "
-            f"{task.get('reward', 0)} ₽\n\n"
-        )
+text += (    
+    f"{mark} {task.get('task')}\n"    
+    f"💰 Награда: "    
+    f"{task.get('reward', 0)} ₽\n\n"    
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# SWITCH ROLES
-# ============================================================
+SWITCH ROLES
+
+============================================================
 
 async def become_seller(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    stores = get_user_stores(
-        user_id
-    )
+stores = get_user_stores(
+user_id
+)
 
-    if stores:
-        set_role(
-            user_id,
-            "seller",
-        )
+if stores:
+set_role(
+user_id,
+"seller",
+)
 
-        await query.edit_message_text(
-            "💼 Ты уже являешься продавцом.\n\n"
-            "Переключаю тебя в меню продавца.",
-            reply_markup=seller_menu(
-                user_id
-            ),
-        )
+await query.edit_message_text(    
+    "💼 Ты уже являешься продавцом.\n\n"    
+    "Переключаю тебя в меню продавца.",    
+    reply_markup=seller_menu(    
+        user_id    
+    ),    
+)    
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    await query.edit_message_text(
-        "💼 Чтобы стать продавцом магазина, "
-        "открой магазин и отправь запрос "
-        "«Запроситься в продавцы».\n\n"
-        "После одобрения владельцем магазина "
-        "ты автоматически станешь продавцом.",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🏪 Магазины",
-                        callback_data="stores",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu",
-                    )
-                ],
-            ]
-        ),
-    )
+await query.edit_message_text(
+"💼 Чтобы стать продавцом магазина, "
+"открой магазин и отправь запрос "
+"«Запроситься в продавцы».\n\n"
+"После одобрения владельцем магазина "
+"ты автоматически станешь продавцом.",
+reply_markup=InlineKeyboardMarkup(
+[
+[
+InlineKeyboardButton(
+"🏪 Магазины",
+callback_data="stores",
+)
+],
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+],
+]
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def switch_buyer(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    set_role(
-        query.from_user.id,
-        "buyer",
-    )
+set_role(
+query.from_user.id,
+"buyer",
+)
 
-    await query.edit_message_text(
-        "🛍 Ты переключён в режим покупателя.",
-        reply_markup=buyer_menu(
-            query.from_user.id
-        ),
-    )
+await query.edit_message_text(
+"🛍 Ты переключён в режим покупателя.",
+reply_markup=buyer_menu(
+query.from_user.id
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# SELLER MENU
-# ============================================================
+SELLER MENU
+
+============================================================
 
 async def show_seller_menu(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    user = get_user(
-        user_id
-    )
+user = get_user(
+user_id
+)
 
-    if not user:
-        ensure_user(
-            query.from_user
-        )
+if not user:
+ensure_user(
+query.from_user
+)
 
-    await query.edit_message_text(
-        "💼 Меню продавца",
-        reply_markup=seller_menu(
-            user_id
-        ),
-    )
+await query.edit_message_text(
+"💼 Меню продавца",
+reply_markup=seller_menu(
+user_id
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# MY PRODUCTS
-# ============================================================
+MY PRODUCTS
+
+============================================================
 
 async def my_products(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user_id = query.from_user.id
+user_id = query.from_user.id
 
-    stores = get_user_stores(
-        user_id
-    )
+stores = get_user_stores(
+user_id
+)
 
-    if not stores:
-        await query.edit_message_text(
-            "📦 У тебя нет магазина.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not stores:
+await query.edit_message_text(
+"📦 У тебя нет магазина.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    store_ids = {
-        store["id"]
-        for store in stores
-    }
+store_ids = {
+store["id"]
+for store in stores
+}
 
-    products = db_select(
-        "products"
-    )
+products = db_select(
+"products"
+)
 
-    products = [
-        p
-        for p in products
-        if p.get("store_id")
-        in store_ids
-    ]
+products = [
+p
+for p in products
+if p.get("store_id")
+in store_ids
+]
 
-    if not products:
-        await query.edit_message_text(
-            "📦 Товаров пока нет.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
-        )
+if not products:
+await query.edit_message_text(
+"📦 Товаров пока нет.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-        await safe_query_answer(query)
+await safe_query_answer(query)    
 
-        return
+return
 
-    text = (
-        "📦 Твои товары:\n\n"
-    )
+text = (
+"📦 Твои товары:\n\n"
+)
 
-    for product in products:
-        text += (
-            f"{product_title(product)}\n"
-            f"💰 {product.get('price', 0)} ₽\n"
-            f"📦 Остаток: "
-            f"{product.get('stock', 0)}\n\n"
-        )
+for product in products:
+text += (
+f"{product_title(product)}\n"
+f"💰 {product.get('price', 0)} ₽\n"
+f"📦 Остаток: "
+f"{product.get('stock', 0)}\n\n"
+)
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="seller_menu",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="seller_menu",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# NEARBY STORES
-# ============================================================
+NEARBY STORES
+
+============================================================
 
 async def nearby_stores(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    await query.edit_message_text(
-        "📍 Чтобы найти магазины рядом, "
-        "отправь свою геолокацию.",
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+"📍 Чтобы найти магазины рядом, "
+"отправь свою геолокацию.",
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+]]
+),
+)
 
-    context.user_data[
-        "awaiting_location"
-    ] = True
+context.user_data[
+"awaiting_location"
+] = True
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def receive_location(
-    update,
-    context,
+update,
+context,
 ):
-    if not context.user_data.get(
-        "awaiting_location"
-    ):
-        return
+if not context.user_data.get(
+"awaiting_location"
+):
+return
 
-    context.user_data[
-        "awaiting_location"
-    ] = False
+context.user_data[
+"awaiting_location"
+] = False
 
-    location = update.message.location
+location = update.message.location
 
-    latitude = location.latitude
-    longitude = location.longitude
+latitude = location.latitude
+longitude = location.longitude
 
-    stores = db_select(
-        "stores"
-    )
+stores = db_select(
+"stores"
+)
 
-    nearby = []
+nearby = []
 
-    for store in stores:
-        lat = store.get(
-            "latitude"
-        )
+for store in stores:
+lat = store.get(
+"latitude"
+)
 
-        lon = store.get(
-            "longitude"
-        )
+lon = store.get(    
+    "longitude"    
+)    
 
-        if lat is None or lon is None:
-            continue
+if lat is None or lon is None:    
+    continue    
 
-        lat_diff = abs(
-            float(lat) - latitude
-        )
+lat_diff = abs(    
+    float(lat) - latitude    
+)    
 
-        lon_diff = abs(
-            float(lon) - longitude
-        )
+lon_diff = abs(    
+    float(lon) - longitude    
+)    
 
-        distance = (
-            lat_diff ** 2
-            + lon_diff ** 2
-        ) ** 0.5
+distance = (    
+    lat_diff ** 2    
+    + lon_diff ** 2    
+) ** 0.5    
 
-        nearby.append(
-            (
-                distance,
-                store,
-            )
-        )
+nearby.append(    
+    (    
+        distance,    
+        store,    
+    )    
+)
 
-    nearby.sort(
-        key=lambda x: x[0]
-    )
+nearby.sort(
+key=lambda x: x[0]
+)
 
-    nearby = nearby[:10]
+nearby = nearby[:10]
 
-    if not nearby:
-        await update.message.reply_text(
-            "📍 Рядом магазинов не найдено.",
-            reply_markup=buyer_menu(
-                update.effective_user.id
-            ),
-        )
+if not nearby:
+await update.message.reply_text(
+"📍 Рядом магазинов не найдено.",
+reply_markup=buyer_menu(
+update.effective_user.id
+),
+)
 
-        return
+return
 
-    text = (
-        "📍 Магазины рядом:\n\n"
-    )
+text = (
+"📍 Магазины рядом:\n\n"
+)
 
-    buttons = []
+buttons = []
 
-    for _, store in nearby:
-        text += (
-            f"🏪 {store.get('name')}\n"
-            f"📍 {store.get('address') or 'Адрес не указан'}\n\n"
-        )
+for _, store in nearby:
+text += (
+f"🏪 {store.get('name')}\n"
+f"📍 {store.get('address') or 'Адрес не указан'}\n\n"
+)
 
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"🏪 {store.get('name')}",
-                    callback_data=(
-                        f"store_{store['id']}"
-                    ),
-                )
-            ]
-        )
+buttons.append(    
+    [    
+        InlineKeyboardButton(    
+            f"🏪 {store.get('name')}",    
+            callback_data=(    
+                f"store_{store['id']}"    
+            ),    
+        )    
+    ]    
+)
 
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await update.message.reply_text(
+text,
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
+============================================================
 
-# ============================================================
-# ADMIN
-# ============================================================
+ADMIN
+
+============================================================
 
 def is_admin(user_id):
-    return user_id == ADMIN_ID
-
+return user_id == ADMIN_ID
 
 async def admin_panel(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_admin(
+query.from_user.id
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "👥 Пользователи",
-                callback_data="admin_users",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🏪 Магазины",
-                callback_data="admin_stores",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 Товары",
-                callback_data="admin_products",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🛒 Заказы",
-                callback_data="admin_orders",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="back_menu",
-            )
-        ],
-    ]
+buttons = [
+[
+InlineKeyboardButton(
+"👥 Пользователи",
+callback_data="admin_users",
+)
+],
+[
+InlineKeyboardButton(
+"🏪 Магазины",
+callback_data="admin_stores",
+)
+],
+[
+InlineKeyboardButton(
+"📦 Товары",
+callback_data="admin_products",
+)
+],
+[
+InlineKeyboardButton(
+"🛒 Заказы",
+callback_data="admin_orders",
+)
+],
+[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="back_menu",
+)
+],
+]
 
-    await query.edit_message_text(
-        "🛠 Админ-панель\n\n"
-        f"VexMart {VERSION}",
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
+await query.edit_message_text(
+"🛠 Админ-панель\n\n"
+f"VexMart {VERSION}",
+reply_markup=InlineKeyboardMarkup(
+buttons
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def admin_users(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_admin(
+query.from_user.id
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    users = db_select(
-        "users",
-        order_by="id",
-        ascending=False,
-        limit=30,
-    )
+users = db_select(
+"users",
+order_by="id",
+ascending=False,
+limit=30,
+)
 
-    text = (
-        "👥 Пользователи:\n\n"
-    )
+text = (
+"👥 Пользователи:\n\n"
+)
 
-    for user in users:
-        text += (
-            f"🆔 {user.get('id')}\n"
-            f"👤 {user.get('first_name') or '—'}\n"
-            f"@{user.get('username') or '—'}\n"
-            f"Роль: {user.get('role')}\n"
-            f"💰 {user.get('balance', 0)} ₽\n\n"
-        )
+for user in users:
+text += (
+f"🆔 {user.get('id')}\n"
+f"👤 {user.get('first_name') or '—'}\n"
+f"@{user.get('username') or '—'}\n"
+f"Роль: {user.get('role')}\n"
+f"💰 {user.get('balance', 0)} ₽\n\n"
+)
 
-    await query.edit_message_text(
-        text[:4000],
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="admin",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text[:4000],
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="admin",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def admin_stores(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_admin(
+query.from_user.id
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    stores = db_select(
-        "stores",
-        order_by="created_at",
-        ascending=False,
-    )
+stores = db_select(
+"stores",
+order_by="created_at",
+ascending=False,
+)
 
-    text = (
-        "🏪 Магазины:\n\n"
-    )
+text = (
+"🏪 Магазины:\n\n"
+)
 
-    for store in stores:
-        members = get_store_member_ids(
-            store["id"]
-        )
+for store in stores:
+members = get_store_member_ids(
+store["id"]
+)
 
-        text += (
-            f"#{store['id']} "
-            f"{store.get('name')}\n"
-            f"👑 Владелец: "
-            f"{store.get('owner_id')}\n"
-            f"👥 Продавцов: "
-            f"{len(members)}\n\n"
-        )
+text += (    
+    f"#{store['id']} "    
+    f"{store.get('name')}\n"    
+    f"👑 Владелец: "    
+    f"{store.get('owner_id')}\n"    
+    f"👥 Продавцов: "    
+    f"{len(members)}\n\n"    
+)
 
-    await query.edit_message_text(
-        text[:4000],
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="admin",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text[:4000],
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="admin",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def admin_products(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_admin(
+query.from_user.id
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    products = db_select(
-        "products",
-        order_by="id",
-        ascending=False,
-        limit=50,
-    )
+products = db_select(
+"products",
+order_by="id",
+ascending=False,
+limit=50,
+)
 
-    text = (
-        "📦 Товары:\n\n"
-    )
+text = (
+"📦 Товары:\n\n"
+)
 
-    for product in products:
-        text += (
-            f"#{product.get('id')} "
-            f"{product_title(product)}\n"
-            f"💰 {product.get('price', 0)} ₽\n"
-            f"📦 {product.get('stock', 0)}\n"
-            f"🏪 {product.get('store_id') or '—'}\n\n"
-        )
+for product in products:
+text += (
+f"#{product.get('id')} "
+f"{product_title(product)}\n"
+f"💰 {product.get('price', 0)} ₽\n"
+f"📦 {product.get('stock', 0)}\n"
+f"🏪 {product.get('store_id') or '—'}\n\n"
+)
 
-    await query.edit_message_text(
-        text[:4000],
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="admin",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text[:4000],
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="admin",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
-
+await safe_query_answer(query)
 
 async def admin_orders(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
+if not is_admin(
+query.from_user.id
+):
+await safe_query_answer(
+query,
+"Нет доступа.",
+)
+return
 
-    orders = db_select(
-        "orders",
-        order_by="created_at",
-        ascending=False,
-        limit=50,
-    )
+orders = db_select(
+"orders",
+order_by="created_at",
+ascending=False,
+limit=50,
+)
 
-    text = (
-        "🛒 Заказы:\n\n"
-    )
+text = (
+"🛒 Заказы:\n\n"
+)
 
-    for order in orders:
-        text += (
-            f"#{order.get('id')}\n"
-            f"📦 {order.get('product_name') or 'Товар'}\n"
-            f"💰 {order.get('total_price', 0)} ₽\n"
-            f"👤 Покупатель: "
-            f"{order.get('buyer_id') or order.get('user_id')}\n"
-            f"💼 Продавец: "
-            f"{order.get('seller_id') or '—'}\n"
-            f"Статус: "
-            f"{order.get('status')}\n\n"
-        )
+for order in orders:
+text += (
+f"#{order.get('id')}\n"
+f"📦 {order.get('product_name') or 'Товар'}\n"
+f"💰 {order.get('total_price', 0)} ₽\n"
+f"👤 Покупатель: "
+f"{order.get('buyer_id') or order.get('user_id')}\n"
+f"💼 Продавец: "
+f"{order.get('seller_id') or '—'}\n"
+f"Статус: "
+f"{order.get('status')}\n\n"
+)
 
-    await query.edit_message_text(
-        text[:4000],
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="admin",
-                )
-            ]]
-        ),
-    )
+await query.edit_message_text(
+text[:4000],
+reply_markup=InlineKeyboardMarkup(
+[[
+InlineKeyboardButton(
+"⬅️ Назад",
+callback_data="admin",
+)
+]]
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# BACK TO MENU
-# ============================================================
+BACK TO MENU
+
+============================================================
 
 async def back_menu(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
+query = update.callback_query
 
-    user = get_user(
-        query.from_user.id
-    )
+user = get_user(
+query.from_user.id
+)
 
-    if not user:
-        ensure_user(
-            query.from_user
-        )
+if not user:
+ensure_user(
+query.from_user
+)
 
-        user = get_user(
-            query.from_user.id
-        )
+user = get_user(    
+    query.from_user.id    
+)
 
-    if (
-        user
-        and user.get("role") == "seller"
-    ):
-        await query.edit_message_text(
-            "💼 Меню продавца",
-            reply_markup=seller_menu(
-                query.from_user.id
-            ),
-        )
+if (
+user
+and user.get("role") == "seller"
+):
+await query.edit_message_text(
+"💼 Меню продавца",
+reply_markup=seller_menu(
+query.from_user.id
+),
+)
 
-    else:
-        await query.edit_message_text(
-            "🛍 Главное меню",
-            reply_markup=buyer_menu(
-                query.from_user.id
-            ),
-        )
+else:
+await query.edit_message_text(
+"🛍 Главное меню",
+reply_markup=buyer_menu(
+query.from_user.id
+),
+)
 
-    await safe_query_answer(query)
+await safe_query_answer(query)
 
+============================================================
 
-# ============================================================
-# CALLBACK ROUTER
-# ============================================================
+CALLBACK ROUTER
+
+============================================================
 
 async def callback_router(
-    update,
-    context,
+update,
+context,
 ):
-    query = update.callback_query
-
-    data = query.data or ""
-
-    try:
-
-        # ----------------------------------------------------
-        # OLD STORE STATS
-        # ----------------------------------------------------
-
-        if data == "store_stats":
-            await store_stats(
-                update,
-                context,
-            )
-            return
-
-        # ----------------------------------------------------
-        # REQUESTS
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "approve_request_"
-        ):
-            request_id = int(
-                data.split("_")[-1]
-            )
-
-            await approve_request(
-                update,
-                context,
-                request_id,
-            )
-
-            return
-
-        if data.startswith(
-            "reject_request_"
-        ):
-            request_id = int(
-                data.split("_")[-1]
-            )
-
-            await reject_request(
-                update,
-                context,
-                request_id,
-            )
-
-            return
-
-        if data.startswith(
-            "approve_invite_"
-        ):
-            request_id = int(
-                data.split("_")[-1]
-            )
-
-            await approve_invite(
-                update,
-                context,
-                request_id,
-            )
-
-            return
-
-        if data.startswith(
-            "reject_invite_"
-        ):
-            request_id = int(
-                data.split("_")[-1]
-            )
-
-            await reject_invite(
-                update,
-                context,
-                request_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # JOIN STORE
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "join_store_"
-        ):
-            store_id = int(
-                data.split("_")[-1]
-            )
-
-            await join_store(
-                update,
-                context,
-                store_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # SELLER ORDERS
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "seller_order_"
-        ):
-            order_id = int(
-                data.split("_")[-1]
-            )
-
-            await seller_order_details(
-                update,
-                context,
-                order_id,
-            )
-
-            return
-
-        if data.startswith(
-            "accept_order_"
-        ):
-            order_id = int(
-                data.split("_")[-1]
-            )
-
-            await accept_order(
-                update,
-                context,
-                order_id,
-            )
-
-            return
-
-        if data.startswith(
-            "cancel_order_"
-        ):
-            order_id = int(
-                data.split("_")[-1]
-            )
-
-            await cancel_order(
-                update,
-                context,
-                order_id,
-            )
-
-            return
-
-        if data.startswith(
-            "complete_order_"
-        ):
-            order_id = int(
-                data.split("_")[-1]
-            )
-
-            await complete_order(
-                update,
-                context,
-                order_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # STORE SELLERS
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "store_sellers_"
-        ):
-            store_id = int(
-                data.split("_")[-1]
-            )
-
-            await store_sellers(
-                update,
-                context,
-                store_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # PRODUCTS
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "addcart_"
-        ):
-            product_id = int(
-                data.split("_")[-1]
-            )
-
-            await add_to_cart(
-                update,
-                context,
-                product_id,
-            )
-
-            return
-
-        if data.startswith(
-            "buy_"
-        ):
-            product_id = int(
-                data.split("_")[-1]
-            )
-
-            await buy_product(
-                update,
-                context,
-                product_id,
-            )
-
-            return
-
-        if data.startswith(
-            "product_"
-        ):
-            product_id = int(
-                data.split("_")[-1]
-            )
-
-            await show_product(
-                update,
-                context,
-                product_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # STORES
-        # ----------------------------------------------------
-
-        if data.startswith(
-            "store_"
-        ):
-            suffix = data[
-                len("store_"):
-            ]
-
-            if not suffix.isdigit():
-                await safe_query_answer(
-                    query,
-                    "⚠️ Старая кнопка больше не действует.",
-                )
-                return
-
-            store_id = int(
-                suffix
-            )
-
-            await show_store(
-                update,
-                context,
-                store_id,
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # ADMIN
-        # ----------------------------------------------------
-
-        if data == "admin":
-            await admin_panel(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_users":
-            await admin_users(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_stores":
-            await admin_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_products":
-            await admin_products(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_orders":
-            await admin_orders(
-                update,
-                context,
-            )
-            return
-
-        # ----------------------------------------------------
-        # MENUS
-        # ----------------------------------------------------
-
-        if data == "back_menu":
-            await back_menu(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_menu":
-            await show_seller_menu(
-                update,
-                context,
-            )
-            return
-
-        if data == "stores":
-            await show_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "nearby_stores":
-            await nearby_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "profile":
-            await show_profile(
-                update,
-                context,
-            )
-            return
-
-        if data == "cart":
-            await show_cart(
-                update,
-                context,
-            )
-            return
-
-        if data == "clear_cart":
-            await clear_cart(
-                update,
-                context,
-            )
-            return
-
-        if data == "buyer_orders":
-            await buyer_orders(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_orders":
-            await seller_orders(
-                update,
-                context,
-            )
-            return
-
-        if data == "tasks":
-            await show_tasks(
-                update,
-                context,
-            )
-            return
-
-        if data == "my_store":
-            await my_store(
-                update,
-                context,
-            )
-            return
-
-        if data == "my_products":
-            await my_products(
-                update,
-                context,
-            )
-            return
-
-        if data == "add_seller":
-            await add_seller(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_requests":
-            await show_seller_requests(
-                update,
-                context,
-            )
-            return
-
-        if data == "become_seller":
-            await become_seller(
-                update,
-                context,
-            )
-            return
-
-        if data == "switch_buyer":
-            await switch_buyer(
-                update,
-                context,
-            )
-            return
-
-        # ----------------------------------------------------
-        # UNKNOWN
-        # ----------------------------------------------------
-
-        await safe_query_answer(
-            query,
-            "Неизвестная команда.",
-        )
-
-    except Exception as e:
-        print(
-            f"[CALLBACK ERROR] {data}: {e}"
-        )
-
-        await safe_query_answer(
-            query,
-            "⚠️ Произошла ошибка.",
-        )
-
-
-# ============================================================
-# TEXT HANDLER
-# ============================================================
+query = update.callback_query
+
+data = query.data or ""
+
+try:
+
+# ----------------------------------------------------    
+# OLD STORE STATS    
+# ----------------------------------------------------    
+
+if data == "store_stats":    
+    await store_stats(    
+        update,    
+        context,    
+    )    
+    return    
+
+# ----------------------------------------------------    
+# REQUESTS    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "approve_request_"    
+):    
+    request_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await approve_request(    
+        update,    
+        context,    
+        request_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "reject_request_"    
+):    
+    request_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await reject_request(    
+        update,    
+        context,    
+        request_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "approve_invite_"    
+):    
+    request_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await approve_invite(    
+        update,    
+        context,    
+        request_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "reject_invite_"    
+):    
+    request_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await reject_invite(    
+        update,    
+        context,    
+        request_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# JOIN STORE    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "join_store_"    
+):    
+    store_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await join_store(    
+        update,    
+        context,    
+        store_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# SELLER ORDERS    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "seller_order_"    
+):    
+    order_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await seller_order_details(    
+        update,    
+        context,    
+        order_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "accept_order_"    
+):    
+    order_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await accept_order(    
+        update,    
+        context,    
+        order_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "cancel_order_"    
+):    
+    order_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await cancel_order(    
+        update,    
+        context,    
+        order_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "complete_order_"    
+):    
+    order_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await complete_order(    
+        update,    
+        context,    
+        order_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# STORE SELLERS    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "store_sellers_"    
+):    
+    store_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await store_sellers(    
+        update,    
+        context,    
+        store_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# PRODUCTS    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "addcart_"    
+):    
+    product_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await add_to_cart(    
+        update,    
+        context,    
+        product_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "buy_"    
+):    
+    product_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await buy_product(    
+        update,    
+        context,    
+        product_id,    
+    )    
+
+    return    
+
+if data.startswith(    
+    "product_"    
+):    
+    product_id = int(    
+        data.split("_")[-1]    
+    )    
+
+    await show_product(    
+        update,    
+        context,    
+        product_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# STORES    
+# ----------------------------------------------------    
+
+if data.startswith(    
+    "store_"    
+):    
+    suffix = data[    
+        len("store_"):    
+    ]    
+
+    if not suffix.isdigit():    
+        await safe_query_answer(    
+            query,    
+            "⚠️ Старая кнопка больше не действует.",    
+        )    
+        return    
+
+    store_id = int(    
+        suffix    
+    )    
+
+    await show_store(    
+        update,    
+        context,    
+        store_id,    
+    )    
+
+    return    
+
+# ----------------------------------------------------    
+# ADMIN    
+# ----------------------------------------------------    
+
+if data == "admin":    
+    await admin_panel(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "admin_users":    
+    await admin_users(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "admin_stores":    
+    await admin_stores(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "admin_products":    
+    await admin_products(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "admin_orders":    
+    await admin_orders(    
+        update,    
+        context,    
+    )    
+    return    
+
+# ----------------------------------------------------    
+# MENUS    
+# ----------------------------------------------------    
+
+if data == "back_menu":    
+    await back_menu(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "seller_menu":    
+    await show_seller_menu(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "stores":    
+    await show_stores(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "nearby_stores":    
+    await nearby_stores(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "profile":    
+    await show_profile(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "cart":    
+    await show_cart(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "clear_cart":    
+    await clear_cart(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "buyer_orders":    
+    await buyer_orders(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "seller_orders":    
+    await seller_orders(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "tasks":    
+    await show_tasks(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "my_store":    
+    await my_store(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "my_products":    
+    await my_products(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "add_seller":    
+    await add_seller(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "seller_requests":    
+    await show_seller_requests(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "become_seller":    
+    await become_seller(    
+        update,    
+        context,    
+    )    
+    return    
+
+if data == "switch_buyer":    
+    await switch_buyer(    
+        update,    
+        context,    
+    )    
+    return    
+
+# ----------------------------------------------------    
+# UNKNOWN    
+# ----------------------------------------------------    
+
+await safe_query_answer(    
+    query,    
+    "Неизвестная команда.",    
+)
+
+except Exception as e:
+print(
+f"[CALLBACK ERROR] {data}: {e}"
+)
+
+await safe_query_answer(    
+    query,    
+    "⚠️ Произошла ошибка.",    
+)
+
+============================================================
+
+TEXT HANDLER
+
+============================================================
 
 async def text_handler(
-    update,
-    context,
+update,
+context,
 ):
-    if await process_seller_username(
-        update,
-        context,
-    ):
-        return
+if await process_seller_username(
+update,
+context,
+):
+return
 
-    if context.user_data.get(
-        "awaiting_location"
-    ):
-        return
+if context.user_data.get(
+"awaiting_location"
+):
+return
 
-    await update.message.reply_text(
-        "Используй кнопки меню 👇",
-        reply_markup=buyer_menu(
-            update.effective_user.id
-        ),
-    )
+await update.message.reply_text(
+"Используй кнопки меню 👇",
+reply_markup=buyer_menu(
+update.effective_user.id
+),
+)
 
+============================================================
 
-# ============================================================
-# LOCATION HANDLER
-# ============================================================
+LOCATION HANDLER
+
+============================================================
 
 async def location_handler(
-    update,
-    context,
+update,
+context,
 ):
-    await receive_location(
-        update,
-        context,
-    )
+await receive_location(
+update,
+context,
+)
 
+============================================================
 
-# ============================================================
-# HEALTH SERVER FOR RENDER
-# ============================================================
+HEALTH SERVER FOR RENDER
+
+============================================================
 
 async def health(request):
-    return web.Response(
-        text=f"VexMart {VERSION} is alive!"
-    )
-
+return web.Response(
+text=f"VexMart {VERSION} is alive!"
+)
 
 async def start_web_server(
-    application,
+application,
 ):
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000",
-        )
-    )
+port = int(
+os.getenv(
+"PORT",
+"10000",
+)
+)
 
-    app = web.Application()
+app = web.Application()
 
-    app.router.add_get(
-        "/",
-        health,
-    )
+app.router.add_get(
+"/",
+health,
+)
 
-    app.router.add_get(
-        "/health",
-        health,
-    )
+app.router.add_get(
+"/health",
+health,
+)
 
-    runner = web.AppRunner(
-        app
-    )
+runner = web.AppRunner(
+app
+)
 
-    await runner.setup()
+await runner.setup()
 
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        port,
-    )
+site = web.TCPSite(
+runner,
+"0.0.0.0",
+port,
+)
 
-    await site.start()
+await site.start()
 
-    application.bot_data[
-        "web_runner"
-    ] = runner
+application.bot_data[
+"web_runner"
+] = runner
 
-    print(
-        f"[WEB] Health server started "
-        f"on port {port}"
-    )
-
+print(
+f"[WEB] Health server started "
+f"on port {port}"
+)
 
 async def stop_web_server(
-    application,
+application,
 ):
-    runner = application.bot_data.get(
-        "web_runner"
+runner = application.bot_data.get(
+"web_runner"
+)
+
+if runner:
+try:
+await runner.cleanup()
+
+except Exception as e:    
+    print(    
+        f"[WEB CLEANUP ERROR] {e}"    
     )
 
-    if runner:
-        try:
-            await runner.cleanup()
+============================================================
 
-        except Exception as e:
-            print(
-                f"[WEB CLEANUP ERROR] {e}"
-            )
+ERROR HANDLER
 
-
-# ============================================================
-# ERROR HANDLER
-# ============================================================
+============================================================
 
 async def error_handler(
-    update,
-    context,
+update,
+context,
 ):
-    print(
-        "[BOT ERROR]",
-        context.error,
-    )
+print(
+"[BOT ERROR]",
+context.error,
+)
 
+============================================================
 
-# ============================================================
-# MAIN
-# ============================================================
+MAIN
+
+============================================================
 
 def main():
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(
-            start_web_server
-        )
-        .post_shutdown(
-            stop_web_server
-        )
-        .build()
-    )
+application = (
+Application.builder()
+.token(BOT_TOKEN)
+.post_init(
+start_web_server
+)
+.post_shutdown(
+stop_web_server
+)
+.build()
+)
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
+application.add_handler(
+CommandHandler(
+"start",
+start,
+)
+)
 
-    application.add_handler(
-        CallbackQueryHandler(
-            callback_router,
-        )
-    )
+application.add_handler(
+CallbackQueryHandler(
+callback_router,
+)
+)
 
-    application.add_handler(
-        MessageHandler(
-            filters.LOCATION,
-            location_handler,
-        )
-    )
+application.add_handler(
+MessageHandler(
+filters.LOCATION,
+location_handler,
+)
+)
 
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            text_handler,
-        )
-    )
+application.add_handler(
+MessageHandler(
+filters.TEXT
+& ~filters.COMMAND,
+text_handler,
+)
+)
 
-    application.add_error_handler(
-        error_handler
-    )
+application.add_error_handler(
+error_handler
+)
 
-    print(
-        f"🚀 VexMart {VERSION} starting..."
-    )
+print(
+f"🚀 VexMart {VERSION} starting..."
+)
 
-    application.run_polling(
-        drop_pending_updates=True
-    )
+application.run_polling(
+drop_pending_updates=True
+)
 
-
-if __name__ == "__main__":
-    main()
+if name == "main":
+main()
