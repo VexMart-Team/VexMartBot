@@ -1,18 +1,26 @@
 import os
 import asyncio
-
 from aiohttp import web
-from supabase import create_client
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from supabase import create_client
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes,
     MessageHandler,
+    ContextTypes,
     filters,
 )
+
+
+# =========================================================
+# CONFIG
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -20,21 +28,77 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+if not TOKEN:
+    raise RuntimeError("Не указан BOT_TOKEN")
+
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Не указаны SUPABASE_URL или SUPABASE_KEY")
+
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-# =========================
-# DATABASE
-# =========================
+# =========================================================
+# DATABASE HELPERS
+# =========================================================
 
 def get_user(user_id):
     result = (
         supabase
         .table("users")
         .select("*")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if result.data:
+        return result.data[0]
+
+    return None
+
+
+def create_user(tg_user):
+    existing = get_user(tg_user.id)
+
+    if existing:
+        return existing
+
+    role = "buyer"
+
+    data = {
+        "id": tg_user.id,
+        "username": tg_user.username,
+        "first_name": tg_user.first_name,
+        "role": role,
+        "balance": 100,
+    }
+
+    result = (
+        supabase
+        .table("users")
+        .insert(data)
+        .execute()
+    )
+
+    if result.data:
+        return result.data[0]
+
+    return data
+
+
+def update_balance(user_id, amount):
+    user = get_user(user_id)
+
+    if not user:
+        return None
+
+    new_balance = user.get("balance", 0) + amount
+
+    result = (
+        supabase
+        .table("users")
+        .update({"balance": new_balance})
         .eq("id", user_id)
         .execute()
     )
@@ -45,55 +109,20 @@ def get_user(user_id):
     return None
 
 
-def create_user(user):
-    existing = get_user(user.id)
-
-    if existing:
-        return existing
-
-    result = (
-        supabase
-        .table("users")
-        .insert({
-            "id": user.id,
-            "username": user.username or "",
-            "first_name": user.first_name or "Пользователь",
-            "role": None,
-            "balance": 100,
-        })
-        .execute()
-    )
-
-    return result.data[0] if result.data else get_user(user.id)
-
-
-def update_balance(user_id, amount):
-    user = get_user(user_id)
-
-    if not user:
-        return
-
-    new_balance = user["balance"] + amount
-
-    (
-        supabase
-        .table("users")
-        .update({"balance": new_balance})
-        .eq("id", user_id)
-        .execute()
-    )
-
-
 def get_store(store_id):
     result = (
         supabase
         .table("stores")
         .select("*")
         .eq("id", store_id)
+        .limit(1)
         .execute()
     )
 
-    return result.data[0] if result.data else None
+    if result.data:
+        return result.data[0]
+
+    return None
 
 
 def get_product(product_id):
@@ -102,35 +131,82 @@ def get_product(product_id):
         .table("products")
         .select("*")
         .eq("id", product_id)
+        .limit(1)
         .execute()
     )
 
-    return result.data[0] if result.data else None
+    if result.data:
+        return result.data[0]
+
+    return None
 
 
-# =========================
+def count_rows(table_name):
+    result = (
+        supabase
+        .table(table_name)
+        .select("id")
+        .execute()
+    )
+
+    return len(result.data or [])
+
+
+def get_all_rows(table_name):
+    result = (
+        supabase
+        .table(table_name)
+        .select("*")
+        .execute()
+    )
+
+    return result.data or []
+
+
+# =========================================================
+# STATISTICS TRACKING
+# =========================================================
+
+def track_bot_visit(user_id):
+    try:
+        supabase.table("bot_visits").insert({
+            "user_id": user_id
+        }).execute()
+    except Exception:
+        pass
+
+
+def track_store_view(user_id, store_id):
+    try:
+        supabase.table("store_views").insert({
+            "user_id": user_id,
+            "store_id": store_id
+        }).execute()
+    except Exception:
+        pass
+
+
+# =========================================================
 # MENUS
-# =========================
+# =========================================================
 
 def role_keyboard():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                "🛒 Я покупатель",
+                "🛒 Покупатель",
                 callback_data="role_buyer"
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
-                "📦 Я курьер",
+                "🏪 Продавец",
                 callback_data="role_seller"
-            )
+            ),
         ]
     ])
 
 
-def buyer_menu():
-    return InlineKeyboardMarkup([
+def buyer_menu(user_id=None):
+    buttons = [
         [
             InlineKeyboardButton(
                 "🏪 Магазины",
@@ -145,25 +221,35 @@ def buyer_menu():
             InlineKeyboardButton(
                 "👤 Профиль",
                 callback_data="profile"
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
-                "📋 Мои заказы",
+                "📦 Мои заказы",
                 callback_data="my_orders"
             )
         ],
         [
             InlineKeyboardButton(
-                "📦 Стать курьером",
+                "🏪 Стать продавцом",
                 callback_data="switch_seller"
             )
-        ]
-    ])
+        ],
+    ]
+
+    if user_id == ADMIN_ID:
+        buttons.append([
+            InlineKeyboardButton(
+                "🛠️ Админ-панель",
+                callback_data="admin_panel"
+            )
+        ])
+
+    return InlineKeyboardMarkup(buttons)
 
 
-def seller_menu():
-    return InlineKeyboardMarkup([
+def seller_menu(user_id=None):
+    buttons = [
         [
             InlineKeyboardButton(
                 "🏪 Мой магазин",
@@ -174,18 +260,22 @@ def seller_menu():
             InlineKeyboardButton(
                 "➕ Добавить товар",
                 callback_data="add_product"
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
                 "📦 Мои товары",
                 callback_data="my_products"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🛒 Заказы",
+                callback_data="seller_orders"
             )
         ],
         [
             InlineKeyboardButton(
-                "📋 Мои заказы",
-                callback_data="seller_orders"
+                "📊 Статистика магазина",
+                callback_data="store_stats"
             )
         ],
         [
@@ -199,120 +289,115 @@ def seller_menu():
                 "🛒 Стать покупателем",
                 callback_data="switch_buyer"
             )
-        ]
-    ])
+        ],
+    ]
+
+    if user_id == ADMIN_ID:
+        buttons.append([
+            InlineKeyboardButton(
+                "🛠️ Админ-панель",
+                callback_data="admin_panel"
+            )
+        ])
+
+    return InlineKeyboardMarkup(buttons)
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    create_user(user)
 
-    db_user = get_user(user.id)
+    db_user = create_user(user)
 
-    if not db_user["role"]:
-        await update.message.reply_text(
-            "🏪 VexMart\n\n"
-            "Добро пожаловать в VexMart!\n\n"
-            "Кто ты?",
-            reply_markup=role_keyboard()
-        )
+    track_bot_visit(user.id)
+
+    if user.id == ADMIN_ID:
+        await show_admin_panel_message(update)
         return
 
-    if db_user["role"] == "buyer":
+    if db_user.get("role") == "seller":
         await update.message.reply_text(
             "🏪 VexMart\n\n"
-            f"🪙 Баланс: {db_user['balance']} VXC",
-            reply_markup=buyer_menu()
+            "Добро пожаловать в магазинную панель!",
+            reply_markup=seller_menu(user.id)
         )
     else:
         await update.message.reply_text(
-            "📦 Панель курьера\n\n"
-            "Управляй своим магазином:",
-            reply_markup=seller_menu()
+            "🏪 VexMart\n\n"
+            "Добро пожаловать!",
+            reply_markup=buyer_menu(user.id)
         )
 
 
-# =========================
+# =========================================================
 # PROFILE
-# =========================
+# =========================================================
 
 async def profile(query):
     user = get_user(query.from_user.id)
 
-    role = (
-        "🛒 Покупатель"
-        if user["role"] == "buyer"
-        else "📦 Курьер"
-    )
-
-    await query.edit_message_text(
-        "👤 Профиль\n\n"
-        f"Имя: {user['first_name']}\n"
-        f"Роль: {role}\n"
-        f"🪙 VexCoin: {user['balance']} VXC",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu"
-                )
-            ]
-        ])
-    )
-
-
-# =========================
-# STORES
-# =========================
-
-STORES_PER_PAGE = 5
-
-
-async def show_stores(query, page=0):
-    result = (
-        supabase
-        .table("stores")
-        .select("*")
-        .order("id")
-        .execute()
-    )
-
-    stores = result.data or []
-
-    if not stores:
-        await query.edit_message_text(
-            "🏪 Магазины\n\n"
-            "Пока магазинов нет 😢\n\n"
-            "Стань первым курьером и создай магазин!",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu"
-                    )
-                ]
-            ])
+    if not user:
+        await query.message.reply_text(
+            "❌ Пользователь не найден."
         )
         return
 
-    total_pages = (
-        len(stores) + STORES_PER_PAGE - 1
-    ) // STORES_PER_PAGE
+    role = user.get("role", "buyer")
 
-    page = max(0, min(page, total_pages - 1))
+    role_text = (
+        "🏪 Продавец"
+        if role == "seller"
+        else "🛒 Покупатель"
+    )
 
-    start = page * STORES_PER_PAGE
-    end = start + STORES_PER_PAGE
+    text = (
+        "👤 Профиль\n\n"
+        f"Имя: {user.get('first_name', 'Неизвестно')}\n"
+        f"Username: @{user.get('username') or 'нет'}\n"
+        f"Роль: {role_text}\n"
+        f"💰 Баланс: {user.get('balance', 0)} VXC"
+    )
 
-    page_stores = stores[start:end]
+    await query.edit_message_text(
+        text,
+        reply_markup=buyer_menu(query.from_user.id)
+        if role == "buyer"
+        else seller_menu(query.from_user.id)
+    )
+
+
+# =========================================================
+# STORES
+# =========================================================
+
+async def show_stores(query, page=0):
+    stores = get_all_rows("stores")
+
+    per_page = 5
+
+    start_index = page * per_page
+    end_index = start_index + per_page
+
+    current = stores[start_index:end_index]
+
+    text = "🏪 Магазины\n\n"
+
+    if not current:
+        text += "Пока магазинов нет."
+    else:
+        for store in current:
+            text += (
+                f"🏪 {store['name']}\n"
+                f"📝 {store.get('description') or 'Без описания'}\n"
+                f"ID: {store['id']}\n\n"
+            )
 
     buttons = []
 
-    for store in page_stores:
+    for store in current:
         buttons.append([
             InlineKeyboardButton(
                 f"🏪 {store['name']}",
@@ -325,16 +410,16 @@ async def show_stores(query, page=0):
     if page > 0:
         navigation.append(
             InlineKeyboardButton(
-                "⬆️",
-                callback_data=f"stores_page_{page - 1}"
+                "⬅️",
+                callback_data=f"stores_{page - 1}"
             )
         )
 
-    if page < total_pages - 1:
+    if end_index < len(stores):
         navigation.append(
             InlineKeyboardButton(
-                "⬇️",
-                callback_data=f"stores_page_{page + 1}"
+                "➡️",
+                callback_data=f"stores_{page + 1}"
             )
         )
 
@@ -343,7 +428,7 @@ async def show_stores(query, page=0):
 
     buttons.append([
         InlineKeyboardButton(
-            "🔎 Найти магазин",
+            "🔎 Поиск",
             callback_data="search_store"
         )
     ])
@@ -355,13 +440,53 @@ async def show_stores(query, page=0):
         )
     ])
 
-    text = (
-        "🏪 Магазины\n\n"
-        f"Страница {page + 1} из {total_pages}\n\n"
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-    for i, store in enumerate(page_stores, start=start + 1):
-        text += f"{i}. 🏪 {store['name']}\n"
+
+async def search_store(query, context):
+    context.user_data["action"] = "search_store"
+
+    await query.edit_message_text(
+        "🔎 Напиши название магазина:"
+    )
+
+
+async def show_search_results(query, search_text):
+    stores = get_all_rows("stores")
+
+    search_text = search_text.lower()
+
+    found = [
+        store for store in stores
+        if search_text in store["name"].lower()
+    ]
+
+    text = "🔎 Результаты поиска\n\n"
+
+    buttons = []
+
+    if not found:
+        text += "Ничего не найдено."
+    else:
+        for store in found:
+            text += f"🏪 {store['name']}\n"
+
+            buttons.append([
+                InlineKeyboardButton(
+                    store["name"],
+                    callback_data=f"store_{store['id']}"
+                )
+            ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Магазины",
+            callback_data="stores"
+        )
+    ])
 
     await query.edit_message_text(
         text,
@@ -369,143 +494,49 @@ async def show_stores(query, page=0):
     )
 
 
-# =========================
-# STORE SEARCH
-# =========================
-
-async def search_store(query, context):
-    context.user_data["action"] = "search_store"
-
-    await query.edit_message_text(
-        "🔎 Поиск магазина\n\n"
-        "Напиши название магазина или его часть:"
-    )
-
-
-async def show_search_results(query, search_text):
-    result = (
-        supabase
-        .table("stores")
-        .select("*")
-        .ilike("name", f"%{search_text}%")
-        .order("id")
-        .execute()
-    )
-
-    stores = result.data or []
-
-    if not stores:
-        await query.edit_message_text(
-            "🔎 Поиск\n\n"
-            f"По запросу «{search_text}» "
-            "ничего не найдено 😢",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "🔎 Новый поиск",
-                        callback_data="search_store"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ К магазинам",
-                        callback_data="stores"
-                    )
-                ]
-            ])
-        )
-        return
-
-    buttons = []
-
-    for store in stores:
-        buttons.append([
-            InlineKeyboardButton(
-                f"🏪 {store['name']}",
-                callback_data=f"store_{store['id']}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "🔎 Новый поиск",
-            callback_data="search_store"
-        )
-    ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "⬅️ К магазинам",
-            callback_data="stores"
-        )
-    ])
-
-    await query.edit_message_text(
-        "🔎 Результаты поиска:\n\n"
-        f"Запрос: «{search_text}»",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-# =========================
-# OPEN STORE
-# =========================
-
 async def show_store(query, store_id):
-    user_id = query.from_user.id
-
     store = get_store(store_id)
 
     if not store:
-        await query.answer(
-            "Магазин не найден.",
-            show_alert=True
+        await query.edit_message_text(
+            "❌ Магазин не найден."
         )
         return
 
+    user_id = query.from_user.id
+
+    track_store_view(user_id, store_id)
+
+    # Награда за первый просмотр
     viewed = (
         supabase
         .table("viewed_stores")
         .select("*")
         .eq("user_id", user_id)
         .eq("store_id", store_id)
+        .limit(1)
         .execute()
     )
 
-    reward_text = ""
-
     if not viewed.data:
-        (
-            supabase
-            .table("viewed_stores")
-            .insert({
-                "user_id": user_id,
-                "store_id": store_id
-            })
-            .execute()
-        )
+        supabase.table("viewed_stores").insert({
+            "user_id": user_id,
+            "store_id": store_id
+        }).execute()
 
         update_balance(user_id, 15)
 
-        reward_text = (
-            "\n\n🎁 Новый магазин!\n"
-            "🪙 +15 VXC"
-        )
-
-    products_result = (
+    products = (
         supabase
         .table("products")
         .select("*")
         .eq("store_id", store_id)
-        .order("id")
         .execute()
-    )
-
-    products = products_result.data or []
+    ).data or []
 
     text = (
         f"🏪 {store['name']}\n\n"
-        f"{store['description']}\n\n"
+        f"📝 {store.get('description') or 'Без описания'}\n\n"
         "📦 Товары:\n"
     )
 
@@ -514,24 +545,22 @@ async def show_store(query, store_id):
     if products:
         for product in products:
             text += (
-                f"\n📦 {product['name']}"
-                f" — {product['price']} VXC"
+                f"\n📦 {product['name']} — "
+                f"{product['price']} VXC"
             )
 
             buttons.append([
                 InlineKeyboardButton(
-                    f"🛒 {product['name']}",
+                    product["name"],
                     callback_data=f"product_{product['id']}"
                 )
             ])
     else:
         text += "\nПока товаров нет."
 
-    text += reward_text
-
     buttons.append([
         InlineKeyboardButton(
-            "⬅️ К магазинам",
+            "⬅️ Магазины",
             callback_data="stores"
         )
     ])
@@ -542,54 +571,48 @@ async def show_store(query, store_id):
     )
 
 
-# =========================
+# =========================================================
 # PRODUCTS
-# =========================
+# =========================================================
 
 async def show_product(query, product_id):
     product = get_product(product_id)
 
     if not product:
-        await query.answer(
-            "Товар не найден.",
-            show_alert=True
+        await query.edit_message_text(
+            "❌ Товар не найден."
         )
         return
 
-    store = get_store(product["store_id"])
-
-    if not store:
-        return
+    cashback = product.get("cashback", 5)
 
     text = (
         f"📦 {product['name']}\n\n"
-        f"{product['description']}\n\n"
+        f"📝 {product.get('description') or 'Без описания'}\n\n"
         f"💰 Цена: {product['price']} VXC\n"
-        f"🎁 Кэшбэк: {product['cashback']}%"
+        f"🎁 Кешбэк: {cashback} VXC"
     )
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                "🛒 Купить",
+                callback_data=f"buy_{product_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="stores"
+            )
+        ]
+    ]
 
     await query.edit_message_text(
         text,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🛒 Купить",
-                    callback_data=f"buy_{product_id}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data=f"store_{product['store_id']}"
-                )
-            ]
-        ])
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-
-# =========================
-# BUY
-# =========================
 
 async def buy_product(query, product_id, context):
     buyer_id = query.from_user.id
@@ -597,142 +620,114 @@ async def buy_product(query, product_id, context):
     product = get_product(product_id)
 
     if not product:
-        await query.answer(
-            "Товар не найден.",
-            show_alert=True
+        await query.edit_message_text(
+            "❌ Товар не найден."
         )
-        return
-
-    store = get_store(product["store_id"])
-
-    if not store:
         return
 
     buyer = get_user(buyer_id)
 
-    if buyer["balance"] < product["price"]:
-        await query.answer(
-            "❌ Недостаточно VexCoin!",
-            show_alert=True
+    price = int(product["price"])
+    cashback = int(product.get("cashback", 5) or 0)
+
+    if buyer["balance"] < price:
+        await query.edit_message_text(
+            "❌ Недостаточно VXC."
         )
         return
 
-    update_balance(
-        buyer_id,
-        -product["price"]
-    )
+    store = get_store(product.get("store_id"))
 
-    update_balance(
-        store["owner_id"],
-        product["price"]
-    )
-
-    cashback = int(
-        product["price"]
-        * product["cashback"]
-        / 100
-    )
-
-    update_balance(
-        buyer_id,
-        cashback
-    )
-
-    order_result = (
-        supabase
-        .table("orders")
-        .insert({
-            "buyer_id": buyer_id,
-            "seller_id": store["owner_id"],
-            "product_id": product["id"],
-            "product_name": product["name"],
-            "price": product["price"],
-            "cashback": cashback,
-            "status": "new",
-            "user_id": buyer_id,
-            "quantity": 1,
-            "total_price": product["price"],
-            "store_id": store["id"],
-        })
-        .execute()
-    )
-
-    order_id = (
-        order_result.data[0]["id"]
-        if order_result.data
-        else "?"
-    )
-
-    await context.bot.send_message(
-        chat_id=store["owner_id"],
-        text=(
-            "🔔 НОВЫЙ ЗАКАЗ!\n\n"
-            f"📦 Товар: {product['name']}\n"
-            f"💰 Цена: {product['price']} VXC\n"
-            f"🎁 Кэшбэк: {cashback} VXC\n\n"
-            f"🆔 Заказ #{order_id}\n\n"
-            "Открой «📋 Мои заказы», "
-            "чтобы отметить его выполненным."
+    if not store:
+        await query.edit_message_text(
+            "❌ Магазин товара не найден."
         )
-    )
+        return
+
+    seller_id = store["owner_id"]
+
+    update_balance(buyer_id, -price)
+    update_balance(seller_id, price)
+    update_balance(buyer_id, cashback)
+
+    order_data = {
+        "user_id": buyer_id,
+        "product_id": product_id,
+        "quantity": 1,
+        "total_price": price,
+        "buyer_id": buyer_id,
+        "seller_id": seller_id,
+        "product_name": product["name"],
+        "price": price,
+        "cashback": cashback,
+        "store_id": store["id"],
+        "status": "pending",
+    }
+
+    supabase.table("orders").insert(
+        order_data
+    ).execute()
 
     new_balance = get_user(buyer_id)["balance"]
 
     await query.edit_message_text(
-        "✅ Покупка совершена!\n\n"
+        "✅ Покупка оформлена!\n\n"
         f"📦 {product['name']}\n"
-        f"💰 Потрачено: {product['price']} VXC\n"
-        f"🎁 Кэшбэк: +{cashback} VXC\n\n"
-        f"🪙 Новый баланс: {new_balance} VXC",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🏠 Главное меню",
-                    callback_data="back_menu"
-                )
-            ]
-        ])
+        f"💰 Потрачено: {price} VXC\n"
+        f"🎁 Кешбэк: +{cashback} VXC\n"
+        f"💳 Баланс: {new_balance} VXC"
     )
 
+    try:
+        await context.bot.send_message(
+            chat_id=seller_id,
+            text=(
+                "🛒 Новый заказ!\n\n"
+                f"📦 {product['name']}\n"
+                f"💰 Цена: {price} VXC"
+            )
+        )
+    except Exception:
+        pass
 
-# =========================
+
+# =========================================================
 # TASKS
-# =========================
+# =========================================================
 
 async def show_tasks(query):
     user_id = query.from_user.id
 
     tasks = [
-        ("daily", "📅 Зайти в VexMart", 5),
+        ("daily", "🎯 Ежедневное задание", 5),
         ("profile", "👤 Открыть профиль", 3),
     ]
 
+    text = "🎯 Задания\n\n"
     buttons = []
 
     for task_id, name, reward in tasks:
-        result = (
+        completed = (
             supabase
             .table("tasks")
-            .select("completed")
+            .select("*")
             .eq("user_id", user_id)
             .eq("task", task_id)
+            .limit(1)
             .execute()
         )
 
-        existing = result.data[0] if result.data else None
+        if completed.data and completed.data[0].get("completed"):
+            text += f"✅ {name} — выполнено\n"
+        else:
+            text += f"🟡 {name} — +{reward} VXC\n"
 
-        status = (
-            "✅"
-            if existing and existing["completed"]
-            else "🎯"
-        )
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"{status} {name} +{reward} VXC",
-                callback_data=f"task_{task_id}"
-            )
-        ])
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🎁 Получить {reward} VXC",
+                    callback_data=f"task_{task_id}"
+                )
+            ])
 
     buttons.append([
         InlineKeyboardButton(
@@ -742,8 +737,7 @@ async def show_tasks(query):
     ])
 
     await query.edit_message_text(
-        "🎯 Задания\n\n"
-        "Выполняй задания и получай VexCoin!",
+        text,
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -756,96 +750,99 @@ async def complete_task(query, task_id):
         "profile": 3,
     }
 
-    reward = rewards.get(task_id)
-
-    if not reward:
+    if task_id not in rewards:
         return
 
-    result = (
+    reward = rewards[task_id]
+
+    existing = (
         supabase
         .table("tasks")
-        .select("completed")
+        .select("*")
         .eq("user_id", user_id)
         .eq("task", task_id)
+        .limit(1)
         .execute()
     )
 
-    existing = result.data[0] if result.data else None
-
-    if existing and existing["completed"]:
+    if existing.data and existing.data[0].get("completed"):
         await query.answer(
-            "Это задание уже выполнено!",
+            "Задание уже выполнено!",
             show_alert=True
         )
         return
 
-    (
-        supabase
-        .table("tasks")
-        .upsert({
-            "user_id": user_id,
-            "task": task_id,
-            "reward": reward,
-            "completed": True
-        })
-        .execute()
+    supabase.table("tasks").upsert({
+        "user_id": user_id,
+        "task": task_id,
+        "reward": reward,
+        "completed": True
+    }).execute()
+
+    update_balance(user_id, reward)
+
+    await query.edit_message_text(
+        f"🎉 Задание выполнено!\n\n"
+        f"💰 Получено: +{reward} VXC",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🎯 К заданиям",
+                    callback_data="tasks"
+                )
+            ]
+        ])
     )
 
-    update_balance(
-        user_id,
-        reward
-    )
 
-    await query.answer(
-        f"+{reward} VXC!",
-        show_alert=True
-    )
-
-    await show_tasks(query)
-
-
-# =========================
+# =========================================================
 # STORE MANAGEMENT
-# =========================
+# =========================================================
 
 async def my_store(query):
     user_id = query.from_user.id
 
-    result = (
+    stores = (
         supabase
         .table("stores")
         .select("*")
         .eq("owner_id", user_id)
+        .limit(1)
         .execute()
     )
 
-    store = result.data[0] if result.data else None
+    if not stores.data:
+        buttons = [[
+            InlineKeyboardButton(
+                "➕ Создать магазин",
+                callback_data="create_store"
+            )
+        ]]
 
-    if not store:
         await query.edit_message_text(
-            "🏪 У тебя пока нет магазина.\n\n"
-            "Создай его!",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "➕ Создать магазин",
-                        callback_data="create_store"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu"
-                    )
-                ]
-            ])
+            "🏪 У тебя пока нет магазина.",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
 
+    store = stores.data[0]
+
     await query.edit_message_text(
         f"🏪 {store['name']}\n\n"
-        f"{store['description']}",
+        f"📝 {store.get('description') or 'Без описания'}",
         reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "📊 Статистика",
+                    callback_data="store_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📦 Мои товары",
+                    callback_data="my_products"
+                )
+            ],
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
@@ -857,77 +854,88 @@ async def my_store(query):
 
 
 async def create_store(query, context):
-    context.user_data["action"] = "create_store_name"
+    context.user_data["action"] = "create_store"
 
     await query.edit_message_text(
-        "🏪 Создание магазина\n\n"
-        "Напиши название магазина:"
+        "🏪 Введи название магазина:"
     )
 
 
 async def add_product(query, context):
-    result = (
+    user_id = query.from_user.id
+
+    stores = (
         supabase
         .table("stores")
         .select("*")
-        .eq("owner_id", query.from_user.id)
+        .eq("owner_id", user_id)
+        .limit(1)
         .execute()
     )
 
-    if not result.data:
-        await query.answer(
-            "Сначала создай магазин!",
-            show_alert=True
+    if not stores.data:
+        await query.edit_message_text(
+            "❌ Сначала создай магазин."
         )
         return
 
-    context.user_data["action"] = "product_name"
+    context.user_data["action"] = "add_product_name"
+    context.user_data["store_id"] = stores.data[0]["id"]
 
     await query.edit_message_text(
-        "➕ Добавление товара\n\n"
-        "Напиши название товара:"
+        "📦 Введи название товара:"
     )
 
 
 async def my_products(query):
-    stores_result = (
+    user_id = query.from_user.id
+
+    stores = (
         supabase
         .table("stores")
-        .select("id")
-        .eq("owner_id", query.from_user.id)
+        .select("*")
+        .eq("owner_id", user_id)
+        .limit(1)
         .execute()
     )
 
-    if not stores_result.data:
-        products = []
-    else:
-        store_id = stores_result.data[0]["id"]
-
-        result = (
-            supabase
-            .table("products")
-            .select("*")
-            .eq("store_id", store_id)
-            .order("id")
-            .execute()
+    if not stores.data:
+        await query.edit_message_text(
+            "❌ У тебя нет магазина."
         )
+        return
 
-        products = result.data or []
+    store_id = stores.data[0]["id"]
+
+    products = (
+        supabase
+        .table("products")
+        .select("*")
+        .eq("store_id", store_id)
+        .execute()
+    ).data or []
+
+    text = "📦 Мои товары\n\n"
 
     if not products:
-        text = "📦 У тебя пока нет товаров."
+        text += "Товаров пока нет."
     else:
-        text = "📦 Твои товары:\n\n"
-
         for product in products:
             text += (
-                f"• {product['name']} — "
-                f"{product['price']} VXC\n"
+                f"📦 {product['name']}\n"
+                f"💰 {product['price']} VXC\n"
+                f"🎁 Кешбэк: {product.get('cashback', 5)} VXC\n\n"
             )
 
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "➕ Добавить товар",
+                    callback_data="add_product"
+                )
+            ],
             [
                 InlineKeyboardButton(
                     "⬅️ Назад",
@@ -938,361 +946,153 @@ async def my_products(query):
     )
 
 
-# =========================
-# COMPLETE ORDER
-# =========================
+# =========================================================
+# STORE STATISTICS
+# =========================================================
 
-async def complete_order(query, order_id, context):
-    courier_id = query.from_user.id
+async def store_stats(query):
+    user_id = query.from_user.id
 
-    result = (
+    stores = (
+        supabase
+        .table("stores")
+        .select("*")
+        .eq("owner_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not stores.data:
+        await query.edit_message_text(
+            "❌ У тебя нет магазина."
+        )
+        return
+
+    store = stores.data[0]
+    store_id = store["id"]
+
+    views = (
+        supabase
+        .table("store_views")
+        .select("*")
+        .eq("store_id", store_id)
+        .execute()
+    ).data or []
+
+    products = (
+        supabase
+        .table("products")
+        .select("*")
+        .eq("store_id", store_id)
+        .execute()
+    ).data or []
+
+    orders = (
         supabase
         .table("orders")
         .select("*")
-        .eq("id", order_id)
-        .eq("seller_id", courier_id)
+        .eq("store_id", store_id)
         .execute()
+    ).data or []
+
+    done_orders = [
+        order for order in orders
+        if order.get("status") == "done"
+    ]
+
+    new_orders = [
+        order for order in orders
+        if order.get("status") != "done"
+    ]
+
+    revenue = sum(
+        int(order.get("price") or order.get("total_price") or 0)
+        for order in orders
     )
 
-    if not result.data:
-        await query.answer(
-            "❌ Заказ не найден.",
-            show_alert=True
-        )
-        return
-
-    order = result.data[0]
-
-    if order["status"] == "done":
-        await query.answer(
-            "Этот заказ уже выполнен.",
-            show_alert=True
-        )
-        return
-
-    (
-        supabase
-        .table("orders")
-        .update({"status": "done"})
-        .eq("id", order_id)
-        .execute()
+    cashback = sum(
+        int(order.get("cashback") or 0)
+        for order in orders
     )
 
-    await query.answer(
-        "✅ Заказ отмечен выполненным!",
-        show_alert=True
+    product_sales = {}
+
+    for order in orders:
+        name = order.get("product_name") or "Неизвестно"
+        product_sales[name] = product_sales.get(name, 0) + 1
+
+    top_product = "Нет продаж"
+
+    if product_sales:
+        top_product = max(
+            product_sales,
+            key=product_sales.get
+        )
+
+    text = (
+        f"📊 Статистика магазина\n\n"
+        f"🏪 {store['name']}\n\n"
+        f"👀 Просмотров: {len(views)}\n"
+        f"📦 Товаров: {len(products)}\n"
+        f"🛒 Заказов: {len(orders)}\n"
+        f"✅ Выполнено: {len(done_orders)}\n"
+        f"🆕 Новых: {len(new_orders)}\n"
+        f"💰 Оборот: {revenue} VXC\n"
+        f"🎁 Кешбэк: {cashback} VXC\n\n"
+        f"🏆 Топ-товар: {top_product}"
     )
 
-    try:
-        await context.bot.send_message(
-            chat_id=order["buyer_id"],
-            text=(
-                "🟢 ЗАКАЗ ВЫПОЛНЕН!\n\n"
-                f"📦 {order['product_name']}\n"
-                f"🆔 Заказ #{order['id']}\n\n"
-                "Курьер отметил заказ как выполненный."
-            )
-        )
-    except Exception:
-        pass
-
-    await seller_orders(query)
-
-
-# =========================
-# TEXT INPUT
-# =========================
-
-async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    action = context.user_data.get("action")
-
-    if not action:
-        return
-
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    # SEARCH
-
-    if action == "search_store":
-        context.user_data.clear()
-
-        result = (
-            supabase
-            .table("stores")
-            .select("*")
-            .ilike("name", f"%{text}%")
-            .order("id")
-            .execute()
-        )
-
-        stores = result.data or []
-
-        if not stores:
-            await update.message.reply_text(
-                "🔎 Поиск магазина\n\n"
-                f"По запросу «{text}» "
-                "ничего не найдено 😢",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton(
-                            "🔎 Новый поиск",
-                            callback_data="search_store"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ К магазинам",
-                            callback_data="stores"
-                        )
-                    ]
-                ])
-            )
-            return
-
-        buttons = []
-
-        for store in stores:
-            buttons.append([
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
                 InlineKeyboardButton(
-                    f"🏪 {store['name']}",
-                    callback_data=f"store_{store['id']}"
+                    "🔄 Обновить",
+                    callback_data="store_stats"
                 )
-            ])
-
-        buttons.append([
-            InlineKeyboardButton(
-                "🔎 Новый поиск",
-                callback_data="search_store"
-            )
-        ])
-
-        buttons.append([
-            InlineKeyboardButton(
-                "⬅️ К магазинам",
-                callback_data="stores"
-            )
-        ])
-
-        await update.message.reply_text(
-            "🔎 Результаты поиска:\n\n"
-            f"Запрос: «{text}»",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-        return
-
-    # CREATE STORE
-
-    if action == "create_store_name":
-        context.user_data["store_name"] = text
-        context.user_data["action"] = "create_store_description"
-
-        await update.message.reply_text(
-            "Отлично!\n\n"
-            "Теперь напиши описание магазина:"
-        )
-
-        return
-
-    if action == "create_store_description":
-        name = context.user_data["store_name"]
-
-        existing = (
-            supabase
-            .table("stores")
-            .select("*")
-            .eq("owner_id", user_id)
-            .execute()
-        )
-
-        if existing.data:
-            context.user_data.clear()
-
-            await update.message.reply_text(
-                "❌ У тебя уже есть магазин.",
-                reply_markup=seller_menu()
-            )
-            return
-
-        result = (
-            supabase
-            .table("stores")
-            .insert({
-                "owner_id": user_id,
-                "name": name,
-                "description": text
-            })
-            .execute()
-        )
-
-        if not result.data:
-            await update.message.reply_text(
-                "❌ Не удалось создать магазин."
-            )
-            return
-
-        update_balance(user_id, 15)
-
-        if ADMIN_ID:
-            update_balance(ADMIN_ID, 30)
-
-        context.user_data.clear()
-
-        user = get_user(user_id)
-
-        await update.message.reply_text(
-            "🎉 Магазин создан!\n\n"
-            f"🏪 {name}\n\n"
-            "🪙 Тебе начислено: +15 VXC\n"
-            f"💰 Твой баланс: {user['balance']} VXC",
-            reply_markup=seller_menu()
-        )
-
-        if ADMIN_ID and ADMIN_ID != user_id:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=(
-                        "🏪 НОВЫЙ МАГАЗИН НА VEXMART!\n\n"
-                        f"🏪 {name}\n"
-                        f"👤 Создатель: "
-                        f"{update.effective_user.first_name}\n\n"
-                        "🎁 Награда VexMart: +30 VXC"
-                    )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Назад",
+                    callback_data="back_menu"
                 )
-            except Exception:
-                pass
-
-        return
-
-    # PRODUCT NAME
-
-    if action == "product_name":
-        context.user_data["product_name"] = text
-        context.user_data["action"] = "product_description"
-
-        await update.message.reply_text(
-            "Теперь напиши описание товара:"
-        )
-
-        return
-
-    # PRODUCT DESCRIPTION
-
-    if action == "product_description":
-        context.user_data["product_description"] = text
-        context.user_data["action"] = "product_price"
-
-        await update.message.reply_text(
-            "Теперь напиши цену в VexCoin.\n\n"
-            "Например: 50"
-        )
-
-        return
-
-    # PRODUCT PRICE
-
-    if action == "product_price":
-        try:
-            price = int(text)
-
-            if price <= 0:
-                raise ValueError
-
-        except ValueError:
-            await update.message.reply_text(
-                "❌ Цена должна быть положительным числом."
-            )
-            return
-
-        store_result = (
-            supabase
-            .table("stores")
-            .select("*")
-            .eq("owner_id", user_id)
-            .execute()
-        )
-
-        if not store_result.data:
-            context.user_data.clear()
-
-            await update.message.reply_text(
-                "❌ Магазин не найден.",
-                reply_markup=seller_menu()
-            )
-            return
-
-        store = store_result.data[0]
-
-        product_name = context.user_data["product_name"]
-        product_description = context.user_data["product_description"]
-
-        result = (
-            supabase
-            .table("products")
-            .insert({
-                "store_id": store["id"],
-                "name": product_name,
-                "description": product_description,
-                "price": price,
-                "cashback": 5,
-                "stock": 0
-            })
-            .execute()
-        )
-
-        if not result.data:
-            await update.message.reply_text(
-                "❌ Не удалось добавить товар."
-            )
-            return
-
-        context.user_data.clear()
-
-        await update.message.reply_text(
-            "✅ Товар добавлен!\n\n"
-            f"📦 {product_name}\n"
-            f"💰 Цена: {price} VXC\n"
-            "🎁 Кэшбэк: 5%",
-            reply_markup=seller_menu()
-        )
+            ]
+        ])
+    )
 
 
-# =========================
+# =========================================================
 # ORDERS
-# =========================
+# =========================================================
 
 async def my_orders(query):
-    result = (
+    user_id = query.from_user.id
+
+    orders = (
         supabase
         .table("orders")
         .select("*")
-        .eq("buyer_id", query.from_user.id)
+        .eq("buyer_id", user_id)
         .order("id", desc=True)
         .execute()
-    )
+    ).data or []
 
-    orders = result.data or []
+    text = "📦 Мои заказы\n\n"
 
     if not orders:
-        text = "📋 У тебя пока нет заказов."
+        text += "Заказов пока нет."
     else:
-        text = "📋 Мои заказы:\n\n"
-
         for order in orders:
-            status = {
-                "new": "🟡 Новый",
-                "done": "🟢 Выполнен"
-            }.get(
-                order["status"],
-                order["status"]
+            status = (
+                "✅ Выполнено"
+                if order.get("status") == "done"
+                else "🆕 Новый"
             )
 
             text += (
-                f"🆔 #{order['id']}\n"
-                f"📦 {order['product_name']}\n"
-                f"💰 {order['price']} VXC\n"
+                f"#{order['id']} — "
+                f"{order.get('product_name', 'Товар')}\n"
+                f"💰 {order.get('price', 0)} VXC\n"
                 f"{status}\n\n"
             )
 
@@ -1310,45 +1110,45 @@ async def my_orders(query):
 
 
 async def seller_orders(query):
-    result = (
+    user_id = query.from_user.id
+
+    orders = (
         supabase
         .table("orders")
         .select("*")
-        .eq("seller_id", query.from_user.id)
+        .eq("seller_id", user_id)
         .order("id", desc=True)
         .execute()
-    )
+    ).data or []
 
-    orders = result.data or []
-
-    if not orders:
-        text = "📋 Заказов пока нет."
-    else:
-        text = "📋 Заказы магазина:\n\n"
+    text = "🛒 Заказы магазина\n\n"
 
     buttons = []
 
-    for order in orders:
-        status = (
-            "🟡 Новый"
-            if order["status"] == "new"
-            else "🟢 Выполнен"
-        )
+    if not orders:
+        text += "Заказов пока нет."
+    else:
+        for order in orders:
+            status = (
+                "✅ Выполнено"
+                if order.get("status") == "done"
+                else "🆕 Новый"
+            )
 
-        text += (
-            f"🆔 #{order['id']}\n"
-            f"📦 {order['product_name']}\n"
-            f"💰 {order['price']} VXC\n"
-            f"{status}\n\n"
-        )
+            text += (
+                f"#{order['id']} — "
+                f"{order.get('product_name', 'Товар')}\n"
+                f"💰 {order.get('price', 0)} VXC\n"
+                f"{status}\n\n"
+            )
 
-        if order["status"] == "new":
-            buttons.append([
-                InlineKeyboardButton(
-                    f"✅ Выполнено #{order['id']}",
-                    callback_data=f"complete_{order['id']}"
-                )
-            ])
+            if order.get("status") != "done":
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"✅ Выполнить #{order['id']}",
+                        callback_data=f"complete_{order['id']}"
+                    )
+                ])
 
     buttons.append([
         InlineKeyboardButton(
@@ -1363,9 +1163,475 @@ async def seller_orders(query):
     )
 
 
-# =========================
-# BUTTONS
-# =========================
+async def complete_order(query, order_id, context):
+    user_id = query.from_user.id
+
+    result = (
+        supabase
+        .table("orders")
+        .select("*")
+        .eq("id", order_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        await query.edit_message_text(
+            "❌ Заказ не найден."
+        )
+        return
+
+    order = result.data[0]
+
+    if order.get("seller_id") != user_id:
+        await query.answer(
+            "❌ Это не твой заказ!",
+            show_alert=True
+        )
+        return
+
+    if order.get("status") == "done":
+        await query.answer(
+            "Заказ уже выполнен!",
+            show_alert=True
+        )
+        return
+
+    supabase.table("orders").update({
+        "status": "done"
+    }).eq("id", order_id).execute()
+
+    await query.edit_message_text(
+        f"✅ Заказ #{order_id} выполнен!"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["buyer_id"],
+            text=(
+                "📦 Твой заказ выполнен!\n\n"
+                f"🛒 Заказ #{order_id}\n"
+                f"📦 {order.get('product_name', 'Товар')}"
+            )
+        )
+    except Exception:
+        pass
+
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔄 Обновить",
+                callback_data="admin_panel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 Пользователи",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🏪 Магазины",
+                callback_data="admin_stores"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📦 Товары",
+                callback_data="admin_products"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🛒 Заказы",
+                callback_data="admin_orders"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ В меню",
+                callback_data="back_menu"
+            )
+        ]
+    ])
+
+
+def get_admin_statistics():
+    users = get_all_rows("users")
+    stores = get_all_rows("stores")
+    products = get_all_rows("products")
+    orders = get_all_rows("orders")
+    visits = get_all_rows("bot_visits")
+    store_views = get_all_rows("store_views")
+    tasks = get_all_rows("tasks")
+
+    buyers = [
+        user for user in users
+        if user.get("role") == "buyer"
+    ]
+
+    sellers = [
+        user for user in users
+        if user.get("role") == "seller"
+    ]
+
+    done_orders = [
+        order for order in orders
+        if order.get("status") == "done"
+    ]
+
+    new_orders = [
+        order for order in orders
+        if order.get("status") != "done"
+    ]
+
+    total_balance = sum(
+        int(user.get("balance") or 0)
+        for user in users
+    )
+
+    turnover = sum(
+        int(
+            order.get("price")
+            or order.get("total_price")
+            or 0
+        )
+        for order in orders
+    )
+
+    cashback = sum(
+        int(order.get("cashback") or 0)
+        for order in orders
+    )
+
+    completed_tasks = [
+        task for task in tasks
+        if task.get("completed")
+    ]
+
+    unique_viewers = len(set(
+        view.get("user_id")
+        for view in store_views
+        if view.get("user_id") is not None
+    ))
+
+    return {
+        "users": len(users),
+        "buyers": len(buyers),
+        "sellers": len(sellers),
+        "stores": len(stores),
+        "products": len(products),
+        "orders": len(orders),
+        "done_orders": len(done_orders),
+        "new_orders": len(new_orders),
+        "visits": len(visits),
+        "store_views": len(store_views),
+        "unique_viewers": unique_viewers,
+        "total_balance": total_balance,
+        "turnover": turnover,
+        "cashback": cashback,
+        "completed_tasks": len(completed_tasks),
+    }
+
+
+async def show_admin_panel_message(update):
+    stats = get_admin_statistics()
+
+    text = (
+        "🛠️ АДМИН-ПАНЕЛЬ\n\n"
+
+        "👥 ПОЛЬЗОВАТЕЛИ\n"
+        f"Всего: {stats['users']}\n"
+        f"🛒 Покупателей: {stats['buyers']}\n"
+        f"🏪 Продавцов: {stats['sellers']}\n\n"
+
+        "🤖 БОТ\n"
+        f"▶️ Запусков: {stats['visits']}\n\n"
+
+        "🏪 МАГАЗИНЫ\n"
+        f"Создано: {stats['stores']}\n"
+        f"👀 Просмотров: {stats['store_views']}\n"
+        f"👤 Уникальных зрителей: {stats['unique_viewers']}\n\n"
+
+        "📦 ТОВАРЫ\n"
+        f"Всего товаров: {stats['products']}\n\n"
+
+        "🛒 ЗАКАЗЫ\n"
+        f"Всего: {stats['orders']}\n"
+        f"✅ Выполнено: {stats['done_orders']}\n"
+        f"🆕 Новых: {stats['new_orders']}\n\n"
+
+        "💰 ЭКОНОМИКА\n"
+        f"VXC у пользователей: {stats['total_balance']}\n"
+        f"Оборот заказов: {stats['turnover']} VXC\n"
+        f"Кешбэк: {stats['cashback']} VXC\n\n"
+
+        "🎯 ЗАДАНИЯ\n"
+        f"Выполнено: {stats['completed_tasks']}"
+    )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=admin_keyboard()
+    )
+
+
+async def admin_panel(query):
+    if query.from_user.id != ADMIN_ID:
+        await query.answer(
+            "⛔ Доступ запрещён.",
+            show_alert=True
+        )
+        return
+
+    stats = get_admin_statistics()
+
+    text = (
+        "🛠️ АДМИН-ПАНЕЛЬ\n\n"
+
+        "👥 ПОЛЬЗОВАТЕЛИ\n"
+        f"Всего: {stats['users']}\n"
+        f"🛒 Покупателей: {stats['buyers']}\n"
+        f"🏪 Продавцов: {stats['sellers']}\n\n"
+
+        "🤖 БОТ\n"
+        f"▶️ Запусков: {stats['visits']}\n\n"
+
+        "🏪 МАГАЗИНЫ\n"
+        f"Создано: {stats['stores']}\n"
+        f"👀 Просмотров: {stats['store_views']}\n"
+        f"👤 Уникальных зрителей: {stats['unique_viewers']}\n\n"
+
+        "📦 ТОВАРЫ\n"
+        f"Всего: {stats['products']}\n\n"
+
+        "🛒 ЗАКАЗЫ\n"
+        f"Всего: {stats['orders']}\n"
+        f"✅ Выполнено: {stats['done_orders']}\n"
+        f"🆕 Новых: {stats['new_orders']}\n\n"
+
+        "💰 ЭКОНОМИКА\n"
+        f"VXC у пользователей: {stats['total_balance']}\n"
+        f"Оборот: {stats['turnover']} VXC\n"
+        f"Кешбэк: {stats['cashback']} VXC\n\n"
+
+        "🎯 ЗАДАНИЯ\n"
+        f"Выполнено: {stats['completed_tasks']}"
+    )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=admin_keyboard()
+    )
+
+
+async def admin_list(query, table_name, title):
+    if query.from_user.id != ADMIN_ID:
+        await query.answer(
+            "⛔ Доступ запрещён.",
+            show_alert=True
+        )
+        return
+
+    rows = get_all_rows(table_name)
+
+    text = f"{title}\n\n"
+
+    if not rows:
+        text += "Пока пусто."
+    else:
+        for row in rows[:50]:
+            if table_name == "users":
+                text += (
+                    f"👤 {row.get('first_name', 'Без имени')} "
+                    f"(ID {row.get('id')})\n"
+                    f"💰 {row.get('balance', 0)} VXC\n"
+                    f"Роль: {row.get('role')}\n\n"
+                )
+
+            elif table_name == "stores":
+                text += (
+                    f"🏪 {row.get('name')}\n"
+                    f"ID: {row.get('id')}\n"
+                    f"Владелец: {row.get('owner_id')}\n\n"
+                )
+
+            elif table_name == "products":
+                text += (
+                    f"📦 {row.get('name')}\n"
+                    f"ID: {row.get('id')}\n"
+                    f"Цена: {row.get('price')} VXC\n\n"
+                )
+
+            elif table_name == "orders":
+                text += (
+                    f"🛒 Заказ #{row.get('id')}\n"
+                    f"Товар: {row.get('product_name')}\n"
+                    f"Цена: {row.get('price') or row.get('total_price')} VXC\n"
+                    f"Статус: {row.get('status')}\n\n"
+                )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⬅️ Админ-панель",
+                    callback_data="admin_panel"
+                )
+            ]
+        ])
+    )
+
+
+# =========================================================
+# TEXT INPUT
+# =========================================================
+
+async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    action = context.user_data.get("action")
+
+    if action == "search_store":
+        context.user_data.pop("action", None)
+
+        stores = get_all_rows("stores")
+
+        found = [
+            store for store in stores
+            if text.lower() in store["name"].lower()
+        ]
+
+        buttons = []
+
+        result_text = "🔎 Результаты поиска\n\n"
+
+        if not found:
+            result_text += "Ничего не найдено."
+        else:
+            for store in found:
+                result_text += f"🏪 {store['name']}\n"
+
+                buttons.append([
+                    InlineKeyboardButton(
+                        store["name"],
+                        callback_data=f"store_{store['id']}"
+                    )
+                ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "⬅️ Магазины",
+                callback_data="stores"
+            )
+        ])
+
+        await update.message.reply_text(
+            result_text,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+        return
+
+    if action == "create_store":
+        context.user_data["store_name"] = text
+        context.user_data["action"] = "create_store_description"
+
+        await update.message.reply_text(
+            "📝 Теперь введи описание магазина:"
+        )
+
+        return
+
+    if action == "create_store_description":
+        name = context.user_data.get("store_name")
+
+        supabase.table("stores").insert({
+            "owner_id": user_id,
+            "name": name,
+            "description": text
+        }).execute()
+
+        update_balance(user_id, 15)
+
+        if ADMIN_ID:
+            update_balance(ADMIN_ID, 30)
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "🎉 Магазин создан!\n\n"
+            f"🏪 {name}\n"
+            "💰 Ты получил +15 VXC",
+            reply_markup=seller_menu(user_id)
+        )
+
+        return
+
+    if action == "add_product_name":
+        context.user_data["product_name"] = text
+        context.user_data["action"] = "add_product_description"
+
+        await update.message.reply_text(
+            "📝 Введи описание товара:"
+        )
+
+        return
+
+    if action == "add_product_description":
+        context.user_data["product_description"] = text
+        context.user_data["action"] = "add_product_price"
+
+        await update.message.reply_text(
+            "💰 Введи цену товара в VXC:"
+        )
+
+        return
+
+    if action == "add_product_price":
+        try:
+            price = int(text)
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Цена должна быть числом."
+            )
+            return
+
+        store_id = context.user_data.get("store_id")
+        name = context.user_data.get("product_name")
+        description = context.user_data.get("product_description")
+
+        supabase.table("products").insert({
+            "name": name,
+            "description": description,
+            "price": price,
+            "stock": 0,
+            "store_id": store_id,
+            "cashback": 5
+        }).execute()
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Товар добавлен!",
+            reply_markup=seller_menu(user_id)
+        )
+
+        return
+
+
+# =========================================================
+# CALLBACK BUTTONS
+# =========================================================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1379,196 +1645,226 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     user_id = query.from_user.id
-
-    create_user(query.from_user)
-
     data = query.data
 
-    # FIRST ROLE
+    # -----------------------------------------------------
+    # ADMIN
+    # -----------------------------------------------------
+
+    if data == "admin_panel":
+        await admin_panel(query)
+        return
+
+    if data == "admin_users":
+        await admin_list(
+            query,
+            "users",
+            "👥 ПОЛЬЗОВАТЕЛИ"
+        )
+        return
+
+    if data == "admin_stores":
+        await admin_list(
+            query,
+            "stores",
+            "🏪 МАГАЗИНЫ"
+        )
+        return
+
+    if data == "admin_products":
+        await admin_list(
+            query,
+            "products",
+            "📦 ТОВАРЫ"
+        )
+        return
+
+    if data == "admin_orders":
+        await admin_list(
+            query,
+            "orders",
+            "🛒 ЗАКАЗЫ"
+        )
+        return
+
+    # -----------------------------------------------------
+    # ROLES
+    # -----------------------------------------------------
 
     if data == "role_buyer":
-        (
-            supabase
-            .table("users")
-            .update({"role": "buyer"})
-            .eq("id", user_id)
-            .execute()
-        )
+        supabase.table("users").update({
+            "role": "buyer"
+        }).eq("id", user_id).execute()
 
         await query.edit_message_text(
-            "🛒 Отлично!\n\n"
-            "Ты теперь покупатель VexMart.\n\n"
-            "Тебе начислено 100 VXC на старт!",
-            reply_markup=buyer_menu()
+            "🛒 Ты теперь покупатель!",
+            reply_markup=buyer_menu(user_id)
         )
+        return
 
-    elif data == "role_seller":
-        (
-            supabase
-            .table("users")
-            .update({"role": "seller"})
-            .eq("id", user_id)
-            .execute()
-        )
+    if data == "role_seller":
+        supabase.table("users").update({
+            "role": "seller"
+        }).eq("id", user_id).execute()
 
         await query.edit_message_text(
-            "📦 Отлично!\n\n"
-            "Ты теперь курьер VexMart.\n\n"
-            "Создай свой магазин "
-            "и добавляй товары!",
-            reply_markup=seller_menu()
+            "🏪 Ты теперь продавец!",
+            reply_markup=seller_menu(user_id)
         )
+        return
 
-    # SWITCH ROLE
-
-    elif data == "switch_seller":
-        (
-            supabase
-            .table("users")
-            .update({"role": "seller"})
-            .eq("id", user_id)
-            .execute()
-        )
+    if data == "switch_seller":
+        supabase.table("users").update({
+            "role": "seller"
+        }).eq("id", user_id).execute()
 
         await query.edit_message_text(
-            "📦 Режим курьера включён!\n\n"
-            "Твой прогресс покупателя сохранён.",
-            reply_markup=seller_menu()
+            "🏪 Ты теперь продавец!",
+            reply_markup=seller_menu(user_id)
         )
+        return
 
-    elif data == "switch_buyer":
-        (
-            supabase
-            .table("users")
-            .update({"role": "buyer"})
-            .eq("id", user_id)
-            .execute()
+    if data == "switch_buyer":
+        supabase.table("users").update({
+            "role": "buyer"
+        }).eq("id", user_id).execute()
+
+        await query.edit_message_text(
+            "🛒 Ты теперь покупатель!",
+            reply_markup=buyer_menu(user_id)
         )
+        return
 
+    # -----------------------------------------------------
+    # MENUS
+    # -----------------------------------------------------
+
+    if data == "back_menu":
         user = get_user(user_id)
 
-        await query.edit_message_text(
-            "🛒 Режим покупателя включён!\n\n"
-            "Твой прогресс курьера сохранён.\n\n"
-            f"🪙 Баланс: {user['balance']} VXC",
-            reply_markup=buyer_menu()
-        )
-
-    # MAIN MENU
-
-    elif data == "back_menu":
-        user = get_user(user_id)
-
-        if user["role"] == "seller":
+        if user and user.get("role") == "seller":
             await query.edit_message_text(
-                "📦 Панель курьера:",
-                reply_markup=seller_menu()
+                "🏪 Главное меню",
+                reply_markup=seller_menu(user_id)
             )
         else:
             await query.edit_message_text(
-                "🏪 VexMart\n\n"
-                f"🪙 Баланс: {user['balance']} VXC",
-                reply_markup=buyer_menu()
+                "🛒 Главное меню",
+                reply_markup=buyer_menu(user_id)
             )
 
-    # PROFILE
+        return
 
-    elif data == "profile":
+    if data == "profile":
         await profile(query)
+        return
 
+    # -----------------------------------------------------
     # STORES
+    # -----------------------------------------------------
 
-    elif data == "stores":
-        await show_stores(query, 0)
+    if data == "stores":
+        await show_stores(query)
+        return
 
-    elif data.startswith("stores_page_"):
-        page = int(
-            data.replace("stores_page_", "")
-        )
-
+    if data.startswith("stores_"):
+        page = int(data.split("_")[1])
         await show_stores(query, page)
+        return
 
-    elif data == "search_store":
+    if data == "search_store":
         await search_store(query, context)
+        return
 
-    elif data.startswith("store_"):
-        await show_store(
-            query,
-            int(data.split("_")[1])
-        )
+    if data.startswith("store_"):
+        store_id = int(data.split("_")[1])
+        await show_store(query, store_id)
+        return
 
+    # -----------------------------------------------------
     # PRODUCTS
+    # -----------------------------------------------------
 
-    elif data.startswith("product_"):
-        await show_product(
-            query,
-            int(data.split("_")[1])
-        )
+    if data.startswith("product_"):
+        product_id = int(data.split("_")[1])
+        await show_product(query, product_id)
+        return
 
-    elif data.startswith("buy_"):
-        await buy_product(
-            query,
-            int(data.split("_")[1]),
-            context
-        )
+    if data.startswith("buy_"):
+        product_id = int(data.split("_")[1])
+        await buy_product(query, product_id, context)
+        return
 
+    # -----------------------------------------------------
     # TASKS
+    # -----------------------------------------------------
 
-    elif data == "tasks":
+    if data == "tasks":
         await show_tasks(query)
+        return
 
-    elif data.startswith("task_"):
-        await complete_task(
-            query,
-            data.replace("task_", "")
-        )
+    if data.startswith("task_"):
+        task_id = data.split("_", 1)[1]
+        await complete_task(query, task_id)
+        return
 
-    # SELLER
+    # -----------------------------------------------------
+    # STORE MANAGEMENT
+    # -----------------------------------------------------
 
-    elif data == "my_store":
+    if data == "my_store":
         await my_store(query)
+        return
 
-    elif data == "create_store":
+    if data == "create_store":
         await create_store(query, context)
+        return
 
-    elif data == "add_product":
+    if data == "add_product":
         await add_product(query, context)
+        return
 
-    elif data == "my_products":
+    if data == "my_products":
         await my_products(query)
+        return
 
+    if data == "store_stats":
+        await store_stats(query)
+        return
+
+    # -----------------------------------------------------
     # ORDERS
+    # -----------------------------------------------------
 
-    elif data == "my_orders":
+    if data == "my_orders":
         await my_orders(query)
+        return
 
-    elif data == "seller_orders":
+    if data == "seller_orders":
         await seller_orders(query)
+        return
 
-    elif data.startswith("complete_"):
-        await complete_order(
-            query,
-            int(data.replace("complete_", "")),
-            context
-        )
+    if data.startswith("complete_"):
+        order_id = int(data.split("_")[1])
+        await complete_order(query, order_id, context)
+        return
 
 
-# =========================
-# RENDER
-# =========================
+# =========================================================
+# HEALTH CHECK
+# =========================================================
 
 async def health(request):
     return web.Response(
-        text="VexMart 0.40 is alive! 🏪"
+        text="VexMart 0.41 is alive! 🏪"
     )
 
 
-async def main():
-    if not TOKEN:
-        raise RuntimeError(
-            "Не указан BOT_TOKEN"
-        )
+# =========================================================
+# MAIN
+# =========================================================
 
+async def main():
     application = (
         Application
         .builder()
@@ -1577,16 +1873,11 @@ async def main():
     )
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     application.add_handler(
-        CallbackQueryHandler(
-            button
-        )
+        CallbackQueryHandler(button)
     )
 
     application.add_handler(
@@ -1600,48 +1891,28 @@ async def main():
     await application.start()
     await application.updater.start_polling()
 
-    web_app = web.Application()
+    app = web.Application()
+    app.router.add_get("/", health)
 
-    web_app.router.add_get(
-        "/",
-        health
-    )
-
-    runner = web.AppRunner(
-        web_app
-    )
-
+    runner = web.AppRunner(app)
     await runner.setup()
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
-    )
+    port = int(os.getenv("PORT", "10000"))
 
     site = web.TCPSite(
         runner,
         "0.0.0.0",
         port
-     )
+    )
 
     await site.start()
 
     print(
-        f"VexMart 0.40 запущен "
-        f"на порту {port}!"
+        f"VexMart 0.41 started on port {port}"
     )
 
-    try:
-        while True:
-            await asyncio.sleep(3600)
-
-    finally:
-        await application.updater.stop()
-        await application.stop()
-        await application.shutdown()
-        await runner.cleanup()
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
