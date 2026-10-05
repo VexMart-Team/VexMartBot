@@ -1,5 +1,4 @@
 import os
-import asyncio
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
@@ -9,8 +8,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     Application,
@@ -26,7 +23,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.42.0"
+VERSION = "0.42.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -69,7 +66,10 @@ def db_select(
                 query = query.eq(key, value)
 
         if order_by:
-            query = query.order(order_by, desc=not ascending)
+            query = query.order(
+                order_by,
+                desc=not ascending,
+            )
 
         if limit:
             query = query.limit(limit)
@@ -86,6 +86,7 @@ def db_insert(table, data):
     try:
         result = supabase.table(table).insert(data).execute()
         return result.data or []
+
     except Exception as e:
         print(f"[DB INSERT ERROR] {table}: {e}")
         return []
@@ -131,6 +132,7 @@ def get_user(user_id):
         filters_dict={"id": user_id},
         limit=1,
     )
+
     return users[0] if users else None
 
 
@@ -187,6 +189,7 @@ def get_store(store_id):
         filters_dict={"id": store_id},
         limit=1,
     )
+
     return stores[0] if stores else None
 
 
@@ -196,6 +199,7 @@ def get_owned_store(user_id):
         filters_dict={"owner_id": user_id},
         limit=1,
     )
+
     return stores[0] if stores else None
 
 
@@ -279,7 +283,6 @@ def get_user_stores(user_id):
 
 def get_user_store(user_id):
     stores = get_user_stores(user_id)
-
     return stores[0] if stores else None
 
 
@@ -345,6 +348,7 @@ async def notify_user(
             text=text,
             reply_markup=reply_markup,
         )
+
     except Exception as e:
         print(
             f"[NOTIFY ERROR] user={user_id}: {e}"
@@ -654,7 +658,11 @@ async def show_store(update, context, store_id):
         for product in products:
             stock = product.get("stock", 0)
 
-            badge = "🆕 " if is_new_product(product) else ""
+            badge = (
+                "🆕 "
+                if is_new_product(product)
+                else ""
+            )
 
             buttons.append(
                 [
@@ -668,11 +676,6 @@ async def show_store(update, context, store_id):
             )
     else:
         text += "\n\n📦 Товаров пока нет."
-
-    # ========================================================
-    # ВАЖНО:
-    # КНОПКА ПОКУПАТЕЛЯ СТАТЬ ПРОДАВЦОМ
-    # ========================================================
 
     if not member:
         buttons.append(
@@ -720,7 +723,6 @@ async def join_store(update, context, store_id):
         )
         return
 
-    # Проверяем уже существующий запрос
     existing = db_select(
         "store_seller_requests",
         filters_dict={
@@ -735,9 +737,6 @@ async def join_store(update, context, store_id):
             "Запрос уже отправлен."
         )
         return
-
-    # Если пользователь раньше отправлял rejected,
-    # новый запрос всё равно разрешаем.
 
     request = db_insert(
         "store_seller_requests",
@@ -807,16 +806,21 @@ async def show_seller_requests(update, context):
         )
         return
 
-    store_ids = [store["id"] for store in stores]
+    store_ids = [
+        store["id"]
+        for store in stores
+    ]
 
     requests = db_select(
         "store_seller_requests",
     )
 
     requests = [
-        r for r in requests
+        r
+        for r in requests
         if r.get("store_id") in store_ids
         and r.get("status") == "pending"
+        and r.get("receiver_id") == user_id
     ]
 
     if not requests:
@@ -890,7 +894,7 @@ async def show_seller_requests(update, context):
 
 
 # ============================================================
-# APPROVE / REJECT
+# APPROVE / REJECT REQUEST
 # ============================================================
 
 async def approve_request(update, context, request_id):
@@ -1050,7 +1054,9 @@ async def add_seller(update, context):
         )
         return
 
-    context.user_data["awaiting_seller_username"] = True
+    context.user_data[
+        "awaiting_seller_username"
+    ] = True
 
     await query.edit_message_text(
         "➕ Добавить продавца\n\n"
@@ -1275,7 +1281,8 @@ async def approve_invite(update, context, request_id):
         request.get("sender_id"),
         (
             "🎉 Приглашение принято!\n\n"
-            f"Пользователь {query.from_user.first_name or 'Пользователь'} "
+            f"Пользователь "
+            f"{query.from_user.first_name or 'Пользователь'} "
             f"теперь продавец магазина."
         ),
     )
@@ -1601,6 +1608,12 @@ async def buy_product(update, context, product_id):
 
     user = get_user(user_id)
 
+    if not user:
+        await query.answer(
+            "Профиль не найден."
+        )
+        return
+
     balance = user.get("balance", 0)
 
     if balance < price:
@@ -1611,7 +1624,12 @@ async def buy_product(update, context, product_id):
         return
 
     store_id = product.get("store_id")
-    store = get_store(store_id) if store_id else None
+
+    store = (
+        get_store(store_id)
+        if store_id
+        else None
+    )
 
     seller_id = (
         store.get("owner_id")
@@ -1653,7 +1671,7 @@ async def buy_product(update, context, product_id):
         "cashback": product.get("cashback", 0),
     }
 
-    order = db_insert(
+    db_insert(
         "orders",
         order_data,
     )
@@ -2291,6 +2309,15 @@ async def store_sellers(
         )
         return
 
+    if not is_store_member(
+        query.from_user.id,
+        store_id,
+    ):
+        await query.answer(
+            "Нет доступа."
+        )
+        return
+
     members = get_store_member_ids(
         store_id
     )
@@ -2300,10 +2327,7 @@ async def store_sellers(
         f"«{store.get('name')}»:\n\n"
     )
 
-    for index, member_id in enumerate(
-        members,
-        start=1,
-    ):
+    for member_id in members:
         member = get_user(member_id)
 
         if not member:
@@ -2334,6 +2358,21 @@ async def store_sellers(
                 )
             ]]
         ),
+    )
+
+
+# ============================================================
+# OLD STORE STATS CALLBACK
+# ============================================================
+# Этот обработчик нужен на случай, если у пользователя
+# осталась старая кнопка store_stats от предыдущей версии.
+# Раньше она попадала в store_* и вызывала int("stats").
+
+async def store_stats(update, context):
+    query = update.callback_query
+
+    await query.answer(
+        "📊 Статистика магазина пока недоступна."
     )
 
 
@@ -2445,18 +2484,20 @@ async def become_seller(update, context):
         "После одобрения владельцем магазина "
         "ты автоматически станешь продавцом.",
         reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "🏪 Магазины",
-                    callback_data="stores",
-                )
-            ],
             [
-                InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu",
-                )
-            ]]
+                [
+                    InlineKeyboardButton(
+                        "🏪 Магазины",
+                        callback_data="stores",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Назад",
+                        callback_data="back_menu",
+                    )
+                ],
+            ]
         ),
     )
 
@@ -2533,7 +2574,8 @@ async def my_products(update, context):
     )
 
     products = [
-        p for p in products
+        p
+        for p in products
         if p.get("store_id") in store_ids
     ]
 
@@ -2632,9 +2674,13 @@ async def receive_location(update, context):
         if lat is None or lon is None:
             continue
 
-        # Простая приблизительная дистанция
-        lat_diff = abs(float(lat) - latitude)
-        lon_diff = abs(float(lon) - longitude)
+        lat_diff = abs(
+            float(lat) - latitude
+        )
+
+        lon_diff = abs(
+            float(lon) - longitude
+        )
 
         distance = (
             (lat_diff ** 2 + lon_diff ** 2)
@@ -2755,6 +2801,9 @@ async def admin_users(update, context):
     if not is_admin(
         query.from_user.id
     ):
+        await query.answer(
+            "Нет доступа."
+        )
         return
 
     users = db_select(
@@ -2794,6 +2843,9 @@ async def admin_stores(update, context):
     if not is_admin(
         query.from_user.id
     ):
+        await query.answer(
+            "Нет доступа."
+        )
         return
 
     stores = db_select(
@@ -2836,6 +2888,9 @@ async def admin_products(update, context):
     if not is_admin(
         query.from_user.id
     ):
+        await query.answer(
+            "Нет доступа."
+        )
         return
 
     products = db_select(
@@ -2881,6 +2936,9 @@ async def admin_orders(update, context):
     if not is_admin(
         query.from_user.id
     ):
+        await query.answer(
+            "Нет доступа."
+        )
         return
 
     orders = db_select(
@@ -2930,6 +2988,7 @@ async def back_menu(update, context):
 
     if not user:
         ensure_user(query.from_user)
+
         user = get_user(
             query.from_user.id
         )
@@ -2959,20 +3018,26 @@ async def callback_router(
     context,
 ):
     query = update.callback_query
-
-    await query.answer()
-
     data = query.data
 
     try:
 
         # ----------------------------------------------------
+        # OLD / STALE STORE STATS BUTTON
+        # ----------------------------------------------------
+
+        if data == "store_stats":
+            await store_stats(
+                update,
+                context,
+            )
+            return
+
+        # ----------------------------------------------------
         # REQUESTS
         # ----------------------------------------------------
 
-        if data.startswith(
-            "approve_request_"
-        ):
+        if data.startswith("approve_request_"):
             request_id = int(
                 data.split("_")[-1]
             )
@@ -2984,9 +3049,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "reject_request_"
-        ):
+        if data.startswith("reject_request_"):
             request_id = int(
                 data.split("_")[-1]
             )
@@ -2998,9 +3061,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "approve_invite_"
-        ):
+        if data.startswith("approve_invite_"):
             request_id = int(
                 data.split("_")[-1]
             )
@@ -3012,9 +3073,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "reject_invite_"
-        ):
+        if data.startswith("reject_invite_"):
             request_id = int(
                 data.split("_")[-1]
             )
@@ -3030,9 +3089,7 @@ async def callback_router(
         # JOIN STORE
         # ----------------------------------------------------
 
-        if data.startswith(
-            "join_store_"
-        ):
+        if data.startswith("join_store_"):
             store_id = int(
                 data.split("_")[-1]
             )
@@ -3048,9 +3105,7 @@ async def callback_router(
         # SELLER ORDER
         # ----------------------------------------------------
 
-        if data.startswith(
-            "seller_order_"
-        ):
+        if data.startswith("seller_order_"):
             order_id = int(
                 data.split("_")[-1]
             )
@@ -3062,9 +3117,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "accept_order_"
-        ):
+        if data.startswith("accept_order_"):
             order_id = int(
                 data.split("_")[-1]
             )
@@ -3076,9 +3129,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "cancel_order_"
-        ):
+        if data.startswith("cancel_order_"):
             order_id = int(
                 data.split("_")[-1]
             )
@@ -3090,9 +3141,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "complete_order_"
-        ):
+        if data.startswith("complete_order_"):
             order_id = int(
                 data.split("_")[-1]
             )
@@ -3108,9 +3157,7 @@ async def callback_router(
         # STORE SELLERS
         # ----------------------------------------------------
 
-        if data.startswith(
-            "store_sellers_"
-        ):
+        if data.startswith("store_sellers_"):
             store_id = int(
                 data.split("_")[-1]
             )
@@ -3126,9 +3173,7 @@ async def callback_router(
         # PRODUCTS
         # ----------------------------------------------------
 
-        if data.startswith(
-            "addcart_"
-        ):
+        if data.startswith("addcart_"):
             product_id = int(
                 data.split("_")[-1]
             )
@@ -3140,9 +3185,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "buy_"
-        ):
+        if data.startswith("buy_"):
             product_id = int(
                 data.split("_")[-1]
             )
@@ -3154,9 +3197,7 @@ async def callback_router(
             )
             return
 
-        if data.startswith(
-            "product_"
-        ):
+        if data.startswith("product_"):
             product_id = int(
                 data.split("_")[-1]
             )
@@ -3172,12 +3213,17 @@ async def callback_router(
         # STORES
         # ----------------------------------------------------
 
-        if data.startswith(
-            "store_"
-        ):
-            store_id = int(
-                data.split("_")[-1]
-            )
+        if data.startswith("store_"):
+            suffix = data[len("store_"):]
+
+            # Защита от старых/неправильных callback_data.
+            if not suffix.isdigit():
+                await query.answer(
+                    "⚠️ Старая кнопка больше не действует."
+                )
+                return
+
+            store_id = int(suffix)
 
             await show_store(
                 update,
@@ -3191,318 +3237,4 @@ async def callback_router(
         # ----------------------------------------------------
 
         if data == "admin":
-            await admin_panel(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_users":
-            await admin_users(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_stores":
-            await admin_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_products":
-            await admin_products(
-                update,
-                context,
-            )
-            return
-
-        if data == "admin_orders":
-            await admin_orders(
-                update,
-                context,
-            )
-            return
-
-        # ----------------------------------------------------
-        # MENUS
-        # ----------------------------------------------------
-
-        if data == "back_menu":
-            await back_menu(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_menu":
-            await show_seller_menu(
-                update,
-                context,
-            )
-            return
-
-        if data == "stores":
-            await show_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "nearby_stores":
-            await nearby_stores(
-                update,
-                context,
-            )
-            return
-
-        if data == "profile":
-            await show_profile(
-                update,
-                context,
-            )
-            return
-
-        if data == "cart":
-            await show_cart(
-                update,
-                context,
-            )
-            return
-
-        if data == "clear_cart":
-            await clear_cart(
-                update,
-                context,
-            )
-            return
-
-        if data == "buyer_orders":
-            await buyer_orders(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_orders":
-            await seller_orders(
-                update,
-                context,
-            )
-            return
-
-        if data == "tasks":
-            await show_tasks(
-                update,
-                context,
-            )
-            return
-
-        if data == "my_store":
-            await my_store(
-                update,
-                context,
-            )
-            return
-
-        if data == "my_products":
-            await my_products(
-                update,
-                context,
-            )
-            return
-
-        if data == "add_seller":
-            await add_seller(
-                update,
-                context,
-            )
-            return
-
-        if data == "seller_requests":
-            await show_seller_requests(
-                update,
-                context,
-            )
-            return
-
-        if data == "become_seller":
-            await become_seller(
-                update,
-                context,
-            )
-            return
-
-        if data == "switch_buyer":
-            await switch_buyer(
-                update,
-                context,
-            )
-            return
-
-        await query.answer(
-            "Неизвестная команда."
-        )
-
-    except Exception as e:
-        print(
-            f"[CALLBACK ERROR] {data}: {e}"
-        )
-
-        try:
-            await query.message.reply_text(
-                "⚠️ Произошла ошибка. "
-                "Попробуй ещё раз."
-            )
-        except Exception:
-            pass
-
-
-# ============================================================
-# TEXT HANDLER
-# ============================================================
-
-async def text_handler(update, context):
-    # Сначала проверяем добавление продавца
-    if await process_seller_username(
-        update,
-        context,
-    ):
-        return
-
-    # Геолокация отдельно
-    if context.user_data.get(
-        "awaiting_location"
-    ):
-        return
-
-    await update.message.reply_text(
-        "Используй кнопки меню 👇",
-        reply_markup=buyer_menu(
-            update.effective_user.id
-        ),
-    )
-
-
-# ============================================================
-# LOCATION HANDLER
-# ============================================================
-
-async def location_handler(update, context):
-    await receive_location(
-        update,
-        context,
-    )
-
-
-# ============================================================
-# HEALTH SERVER FOR RENDER
-# ============================================================
-
-async def health(request):
-    return web.Response(
-        text=f"VexMart {VERSION} is alive!"
-    )
-
-
-async def start_web_server(application):
-    port = int(
-        os.getenv("PORT", "10000")
-    )
-
-    app = web.Application()
-
-    app.router.add_get(
-        "/",
-        health,
-    )
-
-    app.router.add_get(
-        "/health",
-        health,
-    )
-
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        port,
-    )
-
-    await site.start()
-
-    print(
-        f"[WEB] Health server started on port {port}"
-    )
-
-
-# ============================================================
-# ERROR HANDLER
-# ============================================================
-
-async def error_handler(update, context):
-    print(
-        "[BOT ERROR]",
-        context.error,
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(start_web_server)
-        .build()
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
-
-    application.add_handler(
-        CallbackQueryHandler(
-            callback_router,
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.LOCATION,
-            location_handler,
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            text_handler,
-        )
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
-
-    print(
-        f"🚀 VexMart {VERSION} starting..."
-    )
-
-    application.run_polling(
-        drop_pending_updates=True
-    )
-
-
-if __name__ == "__main__":
-    main()
+            await
