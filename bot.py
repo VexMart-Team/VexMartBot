@@ -2697,13 +2697,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # BACK
+    # BACK 
     if data == "back":
-        await query.edit_message_text(
-            "🛒 Меню покупателя",
-            reply_markup=buyer_menu()
-        )
-        return
+    await query.edit_message_text(
+        "🛒 Меню покупателя",
+        reply_markup=buyer_menu()
+    )
+    return
+
+if data == "back_seller":
+    await query.edit_message_text(
+        "🏪 Меню продавца",
+        reply_markup=seller_menu()
+    )
+    return
 
     await query.edit_message_text(
         "❌ Неизвестная команда."
