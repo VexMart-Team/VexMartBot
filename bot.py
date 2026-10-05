@@ -1,3 +1,8 @@
+# =========================================================
+# VexMart Bot
+# VERSION: 0.40.3
+# =========================================================
+
 import os
 import asyncio
 from aiohttp import web
@@ -20,6 +25,13 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+
+# =========================================================
+# VERSION
+# =========================================================
+
+VERSION = "0.40.3"
 
 
 # =========================================================
@@ -181,11 +193,24 @@ async def error_handler(
 ):
     error = context.error
 
-    if (
-        isinstance(error, BadRequest)
-        and "Message is not modified" in str(error)
-    ):
-        return
+    if isinstance(error, BadRequest):
+        error_text = str(error).lower()
+
+        # Telegram может прислать такую ошибку,
+        # если пользователь нажал очень старую кнопку.
+        if (
+            "query is too old" in error_text
+            or "query id is invalid" in error_text
+            or "query is too old and response timeout expired" in error_text
+        ):
+            print(
+                f"[VexMart {VERSION}] "
+                f"Ignored expired callback query"
+            )
+            return
+
+        if "message is not modified" in error_text:
+            return
 
     print(f"Unhandled error: {error}")
 
@@ -994,6 +1019,11 @@ async def my_products(query):
 async def store_stats(query):
     user_id = query.from_user.id
 
+    print(
+        f"[VexMart {VERSION}] "
+        f"Store statistics requested by {user_id}"
+    )
+
     stores = (
         supabase
         .table("stores")
@@ -1400,7 +1430,7 @@ async def show_admin_panel_message(update):
     stats = get_admin_statistics()
 
     text = (
-        "🛠️ АДМИН-ПАНЕЛЬ\n\n"
+        f"🛠️ АДМИН-ПАНЕЛЬ VexMart {VERSION}\n\n"
 
         "👥 ПОЛЬЗОВАТЕЛИ\n"
         f"Всего: {stats['users']}\n"
@@ -1453,7 +1483,7 @@ async def admin_panel(query):
     stats = get_admin_statistics()
 
     text = (
-        "🛠️ АДМИН-ПАНЕЛЬ\n\n"
+        f"🛠️ АДМИН-ПАНЕЛЬ VexMart {VERSION}\n\n"
 
         "👥 ПОЛЬЗОВАТЕЛИ\n"
         f"Всего: {stats['users']}\n"
@@ -1721,10 +1751,37 @@ async def button(
 ):
     query = update.callback_query
 
+    if not query:
+        return
+
+    # -----------------------------------------------------
+    # CALLBACK ANSWER
+    #
+    # Telegram требует быстро ответить на callback.
+    # Если кнопка очень старая, answer() может вернуть
+    # BadRequest. В таком случае просто продолжаем работу
+    # с самим callback.
+    # -----------------------------------------------------
+
     try:
         await query.answer()
-    except Exception:
-        pass
+    except BadRequest as error:
+        error_text = str(error).lower()
+
+        if not (
+            "query is too old" in error_text
+            or "query id is invalid" in error_text
+            or "response timeout expired" in error_text
+        ):
+            print(
+                f"[VexMart {VERSION}] "
+                f"Callback answer error: {error}"
+            )
+    except Exception as error:
+        print(
+            f"[VexMart {VERSION}] "
+            f"Callback answer error: {error}"
+        )
 
     user_id = query.from_user.id
     data = query.data
@@ -1842,6 +1899,17 @@ async def button(
         return
 
     # -----------------------------------------------------
+    # STORE STATISTICS
+    # IMPORTANT:
+    # This MUST be before data.startswith("store_")
+    # because "store_stats" also starts with "store_".
+    # -----------------------------------------------------
+
+    if data == "store_stats":
+        await store_stats(query)
+        return
+
+    # -----------------------------------------------------
     # STORES
     # -----------------------------------------------------
 
@@ -1914,10 +1982,6 @@ async def button(
         await my_products(query)
         return
 
-    if data == "store_stats":
-        await store_stats(query)
-        return
-
     # -----------------------------------------------------
     # ORDERS
     # -----------------------------------------------------
@@ -1948,7 +2012,7 @@ async def button(
 
 async def health(request):
     return web.Response(
-        text="VexMart 0.41 is alive! 🏪"
+        text=f"VexMart {VERSION} is alive! 🏪"
     )
 
 
@@ -2019,7 +2083,7 @@ async def main():
     await site.start()
 
     print(
-        f"VexMart 0.41 started on port {port}"
+        f"VexMart {VERSION} started on port {port}"
     )
 
     while True:
