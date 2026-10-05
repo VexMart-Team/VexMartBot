@@ -9,6 +9,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -31,6 +32,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
@@ -39,6 +41,7 @@ if not SUPABASE_URL:
 
 if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY is not set")
+
 
 supabase: Client = create_client(
     SUPABASE_URL,
@@ -75,6 +78,7 @@ def db_select(
             query = query.limit(limit)
 
         result = query.execute()
+
         return result.data or []
 
     except Exception as e:
@@ -100,6 +104,7 @@ def db_update(table, data, filters_dict):
             query = query.eq(key, value)
 
         result = query.execute()
+
         return result.data or []
 
     except Exception as e:
@@ -115,11 +120,48 @@ def db_delete(table, filters_dict):
             query = query.eq(key, value)
 
         result = query.execute()
+
         return result.data or []
 
     except Exception as e:
         print(f"[DB DELETE ERROR] {table}: {e}")
         return []
+
+
+# ============================================================
+# CALLBACK ANSWER
+# ============================================================
+
+async def safe_query_answer(
+    query,
+    text=None,
+    show_alert=False,
+):
+    """
+    Безопасно подтверждает нажатие inline-кнопки.
+
+    Telegram требует ответа на callback query.
+    Благодаря этой функции старые/уже отвеченные callbacks
+    не ломают работу бота.
+    """
+
+    try:
+        await query.answer(
+            text=text,
+            show_alert=show_alert,
+        )
+
+    except Exception as e:
+        error_text = str(e).lower()
+
+        if (
+            "query is too old" not in error_text
+            and "query id is invalid" not in error_text
+            and "already answered" not in error_text
+        ):
+            print(
+                f"[QUERY ANSWER ERROR] {e}"
+            )
 
 
 # ============================================================
@@ -129,7 +171,9 @@ def db_delete(table, filters_dict):
 def get_user(user_id):
     users = db_select(
         "users",
-        filters_dict={"id": user_id},
+        filters_dict={
+            "id": user_id,
+        },
         limit=1,
     )
 
@@ -152,7 +196,9 @@ def ensure_user(tg_user):
             db_update(
                 "users",
                 updates,
-                {"id": tg_user.id},
+                {
+                    "id": tg_user.id,
+                },
             )
 
         return get_user(tg_user.id)
@@ -174,8 +220,12 @@ def ensure_user(tg_user):
 def set_role(user_id, role):
     db_update(
         "users",
-        {"role": role},
-        {"id": user_id},
+        {
+            "role": role,
+        },
+        {
+            "id": user_id,
+        },
     )
 
 
@@ -186,7 +236,9 @@ def set_role(user_id, role):
 def get_store(store_id):
     stores = db_select(
         "stores",
-        filters_dict={"id": store_id},
+        filters_dict={
+            "id": store_id,
+        },
         limit=1,
     )
 
@@ -196,7 +248,9 @@ def get_store(store_id):
 def get_owned_store(user_id):
     stores = db_select(
         "stores",
-        filters_dict={"owner_id": user_id},
+        filters_dict={
+            "owner_id": user_id,
+        },
         limit=1,
     )
 
@@ -206,7 +260,9 @@ def get_owned_store(user_id):
 def get_store_seller_rows(store_id):
     return db_select(
         "store_sellers",
-        filters_dict={"store_id": store_id},
+        filters_dict={
+            "store_id": store_id,
+        },
     )
 
 
@@ -223,7 +279,9 @@ def get_store_member_ids(store_id):
     if owner_id:
         ids.append(owner_id)
 
-    seller_rows = get_store_seller_rows(store_id)
+    seller_rows = get_store_seller_rows(
+        store_id
+    )
 
     for row in seller_rows:
         user_id = row.get("user_id")
@@ -235,9 +293,6 @@ def get_store_member_ids(store_id):
 
 
 def is_store_member(user_id, store_id):
-    if not store_id:
-        return False
-
     store = get_store(store_id)
 
     if not store:
@@ -263,22 +318,32 @@ def get_user_stores(user_id):
 
     owned = db_select(
         "stores",
-        filters_dict={"owner_id": user_id},
+        filters_dict={
+            "owner_id": user_id,
+        },
     )
 
     for store in owned:
-        if store["id"] not in [x["id"] for x in result]:
+        if store["id"] not in [
+            x["id"] for x in result
+        ]:
             result.append(store)
 
     seller_rows = db_select(
         "store_sellers",
-        filters_dict={"user_id": user_id},
+        filters_dict={
+            "user_id": user_id,
+        },
     )
 
     for row in seller_rows:
-        store = get_store(row.get("store_id"))
+        store = get_store(
+            row.get("store_id")
+        )
 
-        if store and store["id"] not in [x["id"] for x in result]:
+        if store and store["id"] not in [
+            x["id"] for x in result
+        ]:
             result.append(store)
 
     return result
@@ -286,6 +351,7 @@ def get_user_stores(user_id):
 
 def get_user_store(user_id):
     stores = get_user_stores(user_id)
+
     return stores[0] if stores else None
 
 
@@ -296,7 +362,9 @@ def get_user_store(user_id):
 def get_product(product_id):
     products = db_select(
         "products",
-        filters_dict={"id": product_id},
+        filters_dict={
+            "id": product_id,
+        },
         limit=1,
     )
 
@@ -311,7 +379,10 @@ def is_new_product(product):
 
     try:
         created = datetime.fromisoformat(
-            str(created_at).replace("Z", "+00:00")
+            str(created_at).replace(
+                "Z",
+                "+00:00",
+            )
         )
 
         if created.tzinfo is None:
@@ -481,7 +552,10 @@ def seller_menu(user_id):
 # START
 # ============================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     user = update.effective_user
 
     ensure_user(user)
@@ -496,7 +570,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🛍 Добро пожаловать в VexMart!\n\n"
         f"Версия: {VERSION}",
-        reply_markup=buyer_menu(user.id),
+        reply_markup=buyer_menu(
+            user.id
+        ),
     )
 
 
@@ -504,15 +580,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # PROFILE
 # ============================================================
 
-async def show_profile(update, context):
+async def show_profile(
+    update,
+    context,
+):
     query = update.callback_query
+
     user_id = query.from_user.id
 
     user = get_user(user_id)
 
     if not user:
-        await query.answer(
-            "Профиль не найден"
+        await safe_query_answer(
+            query,
+            "Профиль не найден",
         )
         return
 
@@ -557,12 +638,17 @@ async def show_profile(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # STORES
 # ============================================================
 
-async def show_stores(update, context):
+async def show_stores(
+    update,
+    context,
+):
     query = update.callback_query
 
     stores = db_select(
@@ -583,6 +669,9 @@ async def show_stores(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
     buttons = []
@@ -613,15 +702,22 @@ async def show_stores(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def show_store(update, context, store_id):
+
+async def show_store(
+    update,
+    context,
+    store_id,
+):
     query = update.callback_query
 
     store = get_store(store_id)
 
     if not store:
-        await query.answer(
-            "Магазин не найден"
+        await safe_query_answer(
+            query,
+            "Магазин не найден",
         )
         return
 
@@ -630,7 +726,7 @@ async def show_store(update, context, store_id):
     products = db_select(
         "products",
         filters_dict={
-            "store_id": store_id
+            "store_id": store_id,
         },
     )
 
@@ -647,8 +743,8 @@ async def show_store(update, context, store_id):
         store_id
     )
 
-    seller_count = 1 + len(
-        seller_rows
+    seller_count = (
+        1 + len(seller_rows)
     )
 
     owner = get_user(owner_id)
@@ -678,7 +774,7 @@ async def show_store(update, context, store_id):
         f"🏪 {store.get('name', 'Магазин')}\n\n"
         f"{store.get('description') or 'Описание отсутствует.'}\n\n"
         f"👥 Продавцов: {seller_count}\n"
-        f"👤 {', '.join(seller_names)}"
+        f"👤 {', '.join(seller_names) or '—'}"
     )
 
     if store.get("address"):
@@ -690,29 +786,19 @@ async def show_store(update, context, store_id):
 
     if products:
         for product in products:
-            stock = product.get(
-                "stock",
-                0
-            )
-
-            badge = (
-                "🆕 "
-                if is_new_product(product)
-                else ""
-            )
-
             buttons.append(
                 [
                     InlineKeyboardButton(
-                        f"{badge}{product.get('name', 'Товар')} — "
+                        f"{product_title(product)} — "
                         f"{product.get('price', 0)} ₽ "
-                        f"(ост. {stock})",
+                        f"(ост. {product.get('stock', 0)})",
                         callback_data=(
                             f"product_{product['id']}"
                         ),
                     )
                 ]
             )
+
     else:
         text += (
             "\n\n📦 Товаров пока нет."
@@ -746,12 +832,18 @@ async def show_store(update, context, store_id):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
-# REQUEST TO JOIN STORE
+# JOIN STORE
 # ============================================================
 
-async def join_store(update, context, store_id):
+async def join_store(
+    update,
+    context,
+    store_id,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
@@ -759,8 +851,9 @@ async def join_store(update, context, store_id):
     store = get_store(store_id)
 
     if not store:
-        await query.answer(
-            "Магазин не найден"
+        await safe_query_answer(
+            query,
+            "Магазин не найден",
         )
         return
 
@@ -768,8 +861,9 @@ async def join_store(update, context, store_id):
         user_id,
         store_id,
     ):
-        await query.answer(
-            "Ты уже продавец этого магазина."
+        await safe_query_answer(
+            query,
+            "Ты уже продавец этого магазина.",
         )
         return
 
@@ -783,8 +877,9 @@ async def join_store(update, context, store_id):
     )
 
     if existing:
-        await query.answer(
-            "Запрос уже отправлен."
+        await safe_query_answer(
+            query,
+            "Запрос уже отправлен.",
         )
         return
 
@@ -793,36 +888,37 @@ async def join_store(update, context, store_id):
         {
             "store_id": store_id,
             "sender_id": user_id,
-            "receiver_id": store.get("owner_id"),
+            "receiver_id": store.get(
+                "owner_id"
+            ),
             "status": "pending",
         },
     )
 
     if not request:
-        await query.answer(
-            "Не удалось отправить запрос."
+        await safe_query_answer(
+            query,
+            "Не удалось отправить запрос.",
         )
         return
 
     request_id = request[0]["id"]
 
     buttons = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ Одобрить",
-                    callback_data=(
-                        f"approve_request_{request_id}"
-                    ),
+        [[
+            InlineKeyboardButton(
+                "✅ Одобрить",
+                callback_data=(
+                    f"approve_request_{request_id}"
                 ),
-                InlineKeyboardButton(
-                    "❌ Отклонить",
-                    callback_data=(
-                        f"reject_request_{request_id}"
-                    ),
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=(
+                    f"reject_request_{request_id}"
                 ),
-            ]
-        ]
+            ),
+        ]]
     )
 
     await notify_user(
@@ -838,8 +934,9 @@ async def join_store(update, context, store_id):
         buttons,
     )
 
-    await query.answer(
-        "Запрос отправлен владельцу магазина!"
+    await safe_query_answer(
+        query,
+        "Запрос отправлен владельцу магазина!",
     )
 
 
@@ -847,16 +944,22 @@ async def join_store(update, context, store_id):
 # SELLER REQUESTS
 # ============================================================
 
-async def show_seller_requests(update, context):
+async def show_seller_requests(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    stores = get_user_stores(user_id)
+    stores = get_user_stores(
+        user_id
+    )
 
     if not stores:
-        await query.answer(
-            "У тебя нет магазина."
+        await safe_query_answer(
+            query,
+            "У тебя нет магазина.",
         )
         return
 
@@ -889,9 +992,14 @@ async def show_seller_requests(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
-    text = "📨 Запросы в магазин:\n\n"
+    text = (
+        "📨 Запросы в магазин:\n\n"
+    )
 
     buttons = []
 
@@ -948,6 +1056,8 @@ async def show_seller_requests(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # APPROVE / REJECT REQUEST
@@ -965,28 +1075,24 @@ async def approve_request(
     requests = db_select(
         "store_seller_requests",
         filters_dict={
-            "id": request_id
+            "id": request_id,
         },
         limit=1,
     )
 
     if not requests:
-        await query.answer(
-            "Запрос не найден."
+        await safe_query_answer(
+            query,
+            "Запрос не найден.",
         )
         return
 
     request = requests[0]
 
     if request.get("status") != "pending":
-        await query.answer(
-            "Этот запрос уже обработан."
-        )
-        return
-
-    if request.get("receiver_id") != user_id:
-        await query.answer(
-            "Этот запрос предназначен не тебе."
+        await safe_query_answer(
+            query,
+            "Этот запрос уже обработан.",
         )
         return
 
@@ -994,12 +1100,21 @@ async def approve_request(
         "store_id"
     )
 
+    # Запрос предназначен владельцу.
+    if request.get("receiver_id") != user_id:
+        await safe_query_answer(
+            query,
+            "Одобрить запрос может только владелец.",
+        )
+        return
+
     if not is_store_member(
         user_id,
         store_id,
     ):
-        await query.answer(
-            "У тебя нет доступа к этому магазину."
+        await safe_query_answer(
+            query,
+            "У тебя нет доступа к этому магазину.",
         )
         return
 
@@ -1021,8 +1136,12 @@ async def approve_request(
 
     db_update(
         "store_seller_requests",
-        {"status": "accepted"},
-        {"id": request_id},
+        {
+            "status": "accepted",
+        },
+        {
+            "id": request_id,
+        },
     )
 
     set_role(
@@ -1036,6 +1155,8 @@ async def approve_request(
         "✅ Запрос одобрен.\n\n"
         "Пользователь теперь продавец этого магазина."
     )
+
+    await safe_query_answer(query)
 
     await notify_user(
         context.bot,
@@ -1060,28 +1181,31 @@ async def reject_request(
     requests = db_select(
         "store_seller_requests",
         filters_dict={
-            "id": request_id
+            "id": request_id,
         },
         limit=1,
     )
 
     if not requests:
-        await query.answer(
-            "Запрос не найден."
+        await safe_query_answer(
+            query,
+            "Запрос не найден.",
         )
         return
 
     request = requests[0]
 
     if request.get("status") != "pending":
-        await query.answer(
-            "Этот запрос уже обработан."
+        await safe_query_answer(
+            query,
+            "Этот запрос уже обработан.",
         )
         return
 
     if request.get("receiver_id") != user_id:
-        await query.answer(
-            "Этот запрос предназначен не тебе."
+        await safe_query_answer(
+            query,
+            "Отклонить запрос может только владелец.",
         )
         return
 
@@ -1093,8 +1217,9 @@ async def reject_request(
         user_id,
         store_id,
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -1104,8 +1229,12 @@ async def reject_request(
 
     db_update(
         "store_seller_requests",
-        {"status": "rejected"},
-        {"id": request_id},
+        {
+            "status": "rejected",
+        },
+        {
+            "id": request_id,
+        },
     )
 
     store = get_store(store_id)
@@ -1113,6 +1242,8 @@ async def reject_request(
     await query.edit_message_text(
         "❌ Запрос отклонён."
     )
+
+    await safe_query_answer(query)
 
     await notify_user(
         context.bot,
@@ -1126,19 +1257,25 @@ async def reject_request(
 
 
 # ============================================================
-# ADD SELLER / INVITE FRIEND
+# ADD SELLER
 # ============================================================
 
-async def add_seller(update, context):
+async def add_seller(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    store = get_user_store(user_id)
+    store = get_user_store(
+        user_id
+    )
 
     if not store:
-        await query.answer(
-            "У тебя нет магазина."
+        await safe_query_answer(
+            query,
+            "У тебя нет магазина.",
         )
         return
 
@@ -1154,6 +1291,8 @@ async def add_seller(update, context):
         "Друг должен хотя бы один раз открыть VexMart "
         "и нажать /start."
     )
+
+    await safe_query_answer(query)
 
 
 async def process_seller_username(
@@ -1212,6 +1351,7 @@ async def process_seller_username(
         return True
 
     friend = users[0]
+
     friend_id = friend["id"]
 
     if friend_id == current_user_id:
@@ -1265,22 +1405,20 @@ async def process_seller_username(
     request_id = created[0]["id"]
 
     keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ Принять",
-                    callback_data=(
-                        f"approve_invite_{request_id}"
-                    ),
+        [[
+            InlineKeyboardButton(
+                "✅ Принять",
+                callback_data=(
+                    f"approve_invite_{request_id}"
                 ),
-                InlineKeyboardButton(
-                    "❌ Отклонить",
-                    callback_data=(
-                        f"reject_invite_{request_id}"
-                    ),
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=(
+                    f"reject_invite_{request_id}"
                 ),
-            ]
-        ]
+            ),
+        ]]
     )
 
     await notify_user(
@@ -1318,28 +1456,35 @@ async def approve_invite(
     requests = db_select(
         "store_seller_requests",
         filters_dict={
-            "id": request_id
+            "id": request_id,
         },
         limit=1,
     )
 
     if not requests:
-        await query.answer(
-            "Приглашение не найдено."
+        await safe_query_answer(
+            query,
+            "Приглашение не найдено.",
         )
         return
 
     request = requests[0]
 
-    if request.get("receiver_id") != user_id:
-        await query.answer(
-            "Это приглашение предназначено не тебе."
+    if request.get(
+        "receiver_id"
+    ) != user_id:
+        await safe_query_answer(
+            query,
+            "Это приглашение предназначено не тебе.",
         )
         return
 
-    if request.get("status") != "pending":
-        await query.answer(
-            "Приглашение уже обработано."
+    if request.get(
+        "status"
+    ) != "pending":
+        await safe_query_answer(
+            query,
+            "Приглашение уже обработано.",
         )
         return
 
@@ -1359,8 +1504,12 @@ async def approve_invite(
 
     db_update(
         "store_seller_requests",
-        {"status": "accepted"},
-        {"id": request_id},
+        {
+            "status": "accepted",
+        },
+        {
+            "id": request_id,
+        },
     )
 
     set_role(
@@ -1368,7 +1517,9 @@ async def approve_invite(
         "seller",
     )
 
-    store = get_store(store_id)
+    store = get_store(
+        store_id
+    )
 
     await query.edit_message_text(
         "🎉 Ты принял приглашение!\n\n"
@@ -1376,9 +1527,13 @@ async def approve_invite(
         f"«{store.get('name') if store else 'Магазин'}»."
     )
 
+    await safe_query_answer(query)
+
     await notify_user(
         context.bot,
-        request.get("sender_id"),
+        request.get(
+            "sender_id"
+        ),
         (
             "🎉 Приглашение принято!\n\n"
             f"Пользователь "
@@ -1400,35 +1555,46 @@ async def reject_invite(
     requests = db_select(
         "store_seller_requests",
         filters_dict={
-            "id": request_id
+            "id": request_id,
         },
         limit=1,
     )
 
     if not requests:
-        await query.answer(
-            "Приглашение не найдено."
+        await safe_query_answer(
+            query,
+            "Приглашение не найдено.",
         )
         return
 
     request = requests[0]
 
-    if request.get("receiver_id") != user_id:
-        await query.answer(
-            "Это приглашение не для тебя."
+    if request.get(
+        "receiver_id"
+    ) != user_id:
+        await safe_query_answer(
+            query,
+            "Это приглашение не для тебя.",
         )
         return
 
-    if request.get("status") != "pending":
-        await query.answer(
-            "Приглашение уже обработано."
+    if request.get(
+        "status"
+    ) != "pending":
+        await safe_query_answer(
+            query,
+            "Приглашение уже обработано.",
         )
         return
 
     db_update(
         "store_seller_requests",
-        {"status": "rejected"},
-        {"id": request_id},
+        {
+            "status": "rejected",
+        },
+        {
+            "id": request_id,
+        },
     )
 
     await query.edit_message_text(
@@ -1436,9 +1602,13 @@ async def reject_invite(
         "Ты остаёшься покупателем."
     )
 
+    await safe_query_answer(query)
+
     await notify_user(
         context.bot,
-        request.get("sender_id"),
+        request.get(
+            "sender_id"
+        ),
         "❌ Пользователь отклонил приглашение "
         "стать продавцом.",
     )
@@ -1455,21 +1625,20 @@ async def show_product(
 ):
     query = update.callback_query
 
-    product = get_product(product_id)
+    product = get_product(
+        product_id
+    )
 
     if not product:
-        await query.answer(
-            "Товар не найден."
+        await safe_query_answer(
+            query,
+            "Товар не найден.",
         )
         return
 
-    title = product.get(
-        "name",
-        "Товар"
+    title = product_title(
+        product
     )
-
-    if is_new_product(product):
-        title = f"🆕 {title}"
 
     text = (
         f"📦 {title}\n\n"
@@ -1495,9 +1664,7 @@ async def show_product(
                 ),
                 InlineKeyboardButton(
                     "➕ В корзину",
-                    callback_data=(
-                        f"addcart_{product_id}"
-                    ),
+                    callback_data=f"addcart_{product_id}",
                 ),
             ]
         )
@@ -1538,6 +1705,8 @@ async def show_product(
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # CART
@@ -1552,17 +1721,24 @@ async def add_to_cart(
 
     user_id = query.from_user.id
 
-    product = get_product(product_id)
+    product = get_product(
+        product_id
+    )
 
     if not product:
-        await query.answer(
-            "Товар не найден."
+        await safe_query_answer(
+            query,
+            "Товар не найден.",
         )
         return
 
-    if product.get("stock", 0) <= 0:
-        await query.answer(
-            "Товар закончился."
+    if product.get(
+        "stock",
+        0
+    ) <= 0:
+        await safe_query_answer(
+            query,
+            "Товар закончился.",
         )
         return
 
@@ -1576,21 +1752,20 @@ async def add_to_cart(
     )
 
     if existing:
-        current_quantity = existing[0].get(
-            "quantity",
-            1,
-        )
-
         db_update(
             "cart",
             {
                 "quantity":
-                    current_quantity + 1
+                    existing[0].get(
+                        "quantity",
+                        1,
+                    ) + 1
             },
             {
                 "id": existing[0]["id"],
             },
         )
+
     else:
         db_insert(
             "cart",
@@ -1601,12 +1776,17 @@ async def add_to_cart(
             },
         )
 
-    await query.answer(
-        "✅ Добавлено в корзину!"
+    await safe_query_answer(
+        query,
+        "✅ Добавлено в корзину!",
     )
 
 
-async def show_cart(update, context):
+async def show_cart(
+    update,
+    context,
+    acknowledge=True,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
@@ -1630,14 +1810,17 @@ async def show_cart(update, context):
                 ]]
             ),
         )
+
+        if acknowledge:
+            await safe_query_answer(query)
+
         return
 
     total = 0
-    text = "🛒 Корзина:\n\n"
 
-    buttons = []
-
-    valid_products = 0
+    text = (
+        "🛒 Корзина:\n\n"
+    )
 
     for row in rows:
         product = get_product(
@@ -1646,8 +1829,6 @@ async def show_cart(update, context):
 
         if not product:
             continue
-
-        valid_products += 1
 
         quantity = row.get(
             "quantity",
@@ -1659,7 +1840,9 @@ async def show_cart(update, context):
             0,
         )
 
-        subtotal = price * quantity
+        subtotal = (
+            price * quantity
+        )
 
         total += subtotal
 
@@ -1669,57 +1852,30 @@ async def show_cart(update, context):
             f"{subtotal} ₽\n\n"
         )
 
-    if valid_products == 0:
-        db_delete(
-            "cart",
-            {
-                "user_id": user_id,
-            },
-        )
-
-        await query.edit_message_text(
-            "🛒 Корзина пуста.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="back_menu",
-                    )
-                ]]
-            ),
-        )
-        return
-
     text += (
         f"💰 Итого: {total} ₽"
     )
 
-    buttons.append(
+    buttons = [
         [
             InlineKeyboardButton(
                 "💳 Оформить заказ",
                 callback_data="checkout_cart",
             )
-        ]
-    )
-
-    buttons.append(
+        ],
         [
             InlineKeyboardButton(
                 "🗑 Очистить корзину",
                 callback_data="clear_cart",
             )
-        ]
-    )
-
-    buttons.append(
+        ],
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="back_menu",
             )
-        ]
-    )
+        ],
+    ]
 
     await query.edit_message_text(
         text,
@@ -1728,249 +1884,33 @@ async def show_cart(update, context):
         ),
     )
 
+    if acknowledge:
+        await safe_query_answer(query)
 
-async def clear_cart(update, context):
+
+async def clear_cart(
+    update,
+    context,
+):
     query = update.callback_query
 
     db_delete(
         "cart",
         {
-            "user_id": query.from_user.id,
+            "user_id":
+                query.from_user.id,
         },
     )
 
-    await query.answer(
-        "🗑 Корзина очищена."
+    await safe_query_answer(
+        query,
+        "🗑 Корзина очищена.",
     )
 
     await show_cart(
         update,
         context,
-    )
-
-
-# ============================================================
-# CHECKOUT CART
-# ============================================================
-
-async def checkout_cart(update, context):
-    query = update.callback_query
-
-    user_id = query.from_user.id
-
-    rows = db_select(
-        "cart",
-        filters_dict={
-            "user_id": user_id,
-        },
-    )
-
-    if not rows:
-        await query.answer(
-            "Корзина пуста."
-        )
-        return
-
-    user = get_user(user_id)
-
-    if not user:
-        await query.answer(
-            "Профиль не найден."
-        )
-        return
-
-    total = 0
-    items = []
-
-    for row in rows:
-        product = get_product(
-            row.get("product_id")
-        )
-
-        if not product:
-            continue
-
-        quantity = row.get(
-            "quantity",
-            1,
-        )
-
-        stock = product.get(
-            "stock",
-            0,
-        )
-
-        if stock < quantity:
-            await query.answer(
-                f"Недостаточно товара "
-                f"«{product.get('name')}»."
-            )
-            return
-
-        price = product.get(
-            "price",
-            0,
-        )
-
-        total += price * quantity
-
-        items.append(
-            (
-                row,
-                product,
-                quantity,
-            )
-        )
-
-    if not items:
-        await query.answer(
-            "В корзине нет доступных товаров."
-        )
-        return
-
-    balance = user.get(
-        "balance",
-        0,
-    )
-
-    if balance < total:
-        await query.answer(
-            f"Недостаточно денег.\n"
-            f"Баланс: {balance} ₽\n"
-            f"Нужно: {total} ₽"
-        )
-        return
-
-    db_update(
-        "users",
-        {
-            "balance": balance - total,
-        },
-        {
-            "id": user_id,
-        },
-    )
-
-    created_orders = 0
-
-    for row, product, quantity in items:
-        store_id = product.get(
-            "store_id"
-        )
-
-        store = (
-            get_store(store_id)
-            if store_id
-            else None
-        )
-
-        seller_id = (
-            store.get("owner_id")
-            if store
-            else None
-        )
-
-        price = product.get(
-            "price",
-            0,
-        )
-
-        order_data = {
-            "user_id": user_id,
-            "product_id": product["id"],
-            "quantity": quantity,
-            "total_price": price * quantity,
-            "status": "pending",
-            "store_id": store_id,
-            "buyer_id": user_id,
-            "seller_id": seller_id,
-            "product_name": product.get("name"),
-            "price": price,
-            "cashback": product.get(
-                "cashback",
-                0,
-            ),
-        }
-
-        created = db_insert(
-            "orders",
-            order_data,
-        )
-
-        if created:
-            created_orders += 1
-
-            db_update(
-                "products",
-                {
-                    "stock":
-                        product.get(
-                            "stock",
-                            0,
-                        ) - quantity
-                },
-                {
-                    "id": product["id"],
-                },
-            )
-
-            if store and seller_id:
-                await notify_user(
-                    context.bot,
-                    seller_id,
-                    (
-                        "🛒 Новый заказ из корзины!\n\n"
-                        f"📦 {product.get('name')}\n"
-                        f"📦 Количество: {quantity}\n"
-                        f"💰 Сумма: "
-                        f"{price * quantity} ₽\n"
-                        f"👤 Покупатель: "
-                        f"{query.from_user.first_name or 'Покупатель'}"
-                    ),
-                )
-
-    db_delete(
-        "cart",
-        {
-            "user_id": user_id,
-        },
-    )
-
-    if created_orders == 0:
-        # Возвращаем деньги, если ни один заказ
-        # не удалось создать.
-        db_update(
-            "users",
-            {
-                "balance": balance,
-            },
-            {
-                "id": user_id,
-            },
-        )
-
-        await query.answer(
-            "Не удалось оформить заказ."
-        )
-        return
-
-    await query.answer(
-        "✅ Заказ оформлен!"
-    )
-
-    await query.edit_message_text(
-        "✅ Корзина оформлена!\n\n"
-        f"📦 Заказов: {created_orders}\n"
-        f"💰 Сумма: {total} ₽\n\n"
-        "Продавцы получили уведомления.",
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "📦 Мои заказы",
-                    callback_data="buyer_orders",
-                )
-            ]]
-        ),
+        acknowledge=False,
     )
 
 
@@ -1987,11 +1927,14 @@ async def buy_product(
 
     user_id = query.from_user.id
 
-    product = get_product(product_id)
+    product = get_product(
+        product_id
+    )
 
     if not product:
-        await query.answer(
-            "Товар не найден."
+        await safe_query_answer(
+            query,
+            "Товар не найден.",
         )
         return
 
@@ -2001,8 +1944,9 @@ async def buy_product(
     )
 
     if stock <= 0:
-        await query.answer(
-            "Товар закончился."
+        await safe_query_answer(
+            query,
+            "Товар закончился.",
         )
         return
 
@@ -2011,11 +1955,14 @@ async def buy_product(
         0,
     )
 
-    user = get_user(user_id)
+    user = get_user(
+        user_id
+    )
 
     if not user:
-        await query.answer(
-            "Профиль не найден."
+        await safe_query_answer(
+            query,
+            "Профиль не найден.",
         )
         return
 
@@ -2025,9 +1972,10 @@ async def buy_product(
     )
 
     if balance < price:
-        await query.answer(
+        await safe_query_answer(
+            query,
             f"Недостаточно денег. "
-            f"Баланс: {balance} ₽"
+            f"Баланс: {balance} ₽",
         )
         return
 
@@ -2050,7 +1998,8 @@ async def buy_product(
     db_update(
         "users",
         {
-            "balance": balance - price,
+            "balance":
+                balance - price,
         },
         {
             "id": user_id,
@@ -2060,65 +2009,39 @@ async def buy_product(
     db_update(
         "products",
         {
-            "stock": stock - 1,
+            "stock":
+                stock - 1,
         },
         {
             "id": product_id,
         },
     )
 
-    order_data = {
-        "user_id": user_id,
-        "product_id": product_id,
-        "quantity": 1,
-        "total_price": price,
-        "status": "pending",
-        "store_id": store_id,
-        "buyer_id": user_id,
-        "seller_id": seller_id,
-        "product_name": product.get("name"),
-        "price": price,
-        "cashback": product.get(
-            "cashback",
-            0,
-        ),
-    }
-
-    created = db_insert(
+    db_insert(
         "orders",
-        order_data,
+        {
+            "user_id": user_id,
+            "product_id": product_id,
+            "quantity": 1,
+            "total_price": price,
+            "status": "pending",
+            "store_id": store_id,
+            "buyer_id": user_id,
+            "seller_id": seller_id,
+            "product_name":
+                product.get("name"),
+            "price": price,
+            "cashback":
+                product.get(
+                    "cashback",
+                    0,
+                ),
+        },
     )
 
-    if not created:
-        # Возвращаем товар и деньги,
-        # если заказ не создался.
-        db_update(
-            "users",
-            {
-                "balance": balance,
-            },
-            {
-                "id": user_id,
-            },
-        )
-
-        db_update(
-            "products",
-            {
-                "stock": stock,
-            },
-            {
-                "id": product_id,
-            },
-        )
-
-        await query.answer(
-            "❌ Не удалось оформить заказ."
-        )
-        return
-
-    await query.answer(
-        "✅ Покупка оформлена!"
+    await safe_query_answer(
+        query,
+        "✅ Покупка оформлена!",
     )
 
     await query.edit_message_text(
@@ -2154,7 +2077,10 @@ async def buy_product(
 # BUYER ORDERS
 # ============================================================
 
-async def buyer_orders(update, context):
+async def buyer_orders(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
@@ -2180,9 +2106,25 @@ async def buyer_orders(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
-    text = "📦 Мои заказы:\n\n"
+    status_text = {
+        "pending":
+            "⏳ Ожидает",
+        "accepted":
+            "✅ Принят",
+        "completed":
+            "🎉 Выполнен",
+        "cancelled":
+            "❌ Отменён",
+    }
+
+    text = (
+        "📦 Мои заказы:\n\n"
+    )
 
     for order in orders:
         status = order.get(
@@ -2190,21 +2132,11 @@ async def buyer_orders(update, context):
             "pending",
         )
 
-        status_text = {
-            "pending": "⏳ Ожидает",
-            "accepted": "✅ Принят",
-            "completed": "🎉 Выполнен",
-            "cancelled": "❌ Отменён",
-        }.get(
-            status,
-            status,
-        )
-
         text += (
             f"#{order.get('id')} — "
             f"{order.get('product_name') or 'Товар'}\n"
             f"💰 {order.get('total_price', 0)} ₽\n"
-            f"{status_text}\n\n"
+            f"{status_text.get(status, status)}\n\n"
         )
 
     await query.edit_message_text(
@@ -2219,17 +2151,25 @@ async def buyer_orders(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # SELLER ORDERS
 # ============================================================
 
-async def seller_orders(update, context):
+async def seller_orders(
+    update,
+    context,
+    acknowledge=True,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    stores = get_user_stores(user_id)
+    stores = get_user_stores(
+        user_id
+    )
 
     store_ids = {
         store["id"]
@@ -2248,6 +2188,10 @@ async def seller_orders(update, context):
                 ]]
             ),
         )
+
+        if acknowledge:
+            await safe_query_answer(query)
+
         return
 
     all_orders = db_select(
@@ -2259,7 +2203,8 @@ async def seller_orders(update, context):
     orders = [
         order
         for order in all_orders
-        if order.get("store_id") in store_ids
+        if order.get("store_id")
+        in store_ids
     ]
 
     if not orders:
@@ -2274,28 +2219,24 @@ async def seller_orders(update, context):
                 ]]
             ),
         )
+
+        if acknowledge:
+            await safe_query_answer(query)
+
         return
 
-    text = "🛒 Заказы магазина:\n\n"
+    text = (
+        "🛒 Заказы магазина:\n\n"
+    )
 
     buttons = []
 
     for order in orders:
-        status = order.get(
-            "status",
-            "pending",
-        )
-
-        product_name = (
-            order.get("product_name")
-            or "Товар"
-        )
-
         text += (
             f"#{order.get('id')} — "
-            f"{product_name}\n"
+            f"{order.get('product_name') or 'Товар'}\n"
             f"💰 {order.get('total_price', 0)} ₽\n"
-            f"Статус: {status}\n\n"
+            f"Статус: {order.get('status')}\n\n"
         )
 
         buttons.append(
@@ -2325,11 +2266,15 @@ async def seller_orders(update, context):
         ),
     )
 
+    if acknowledge:
+        await safe_query_answer(query)
+
 
 async def seller_order_details(
     update,
     context,
     order_id,
+    acknowledge=True,
 ):
     query = update.callback_query
 
@@ -2338,14 +2283,15 @@ async def seller_order_details(
     orders = db_select(
         "orders",
         filters_dict={
-            "id": order_id
+            "id": order_id,
         },
         limit=1,
     )
 
     if not orders:
-        await query.answer(
-            "Заказ не найден."
+        await safe_query_answer(
+            query,
+            "Заказ не найден.",
         )
         return
 
@@ -2355,12 +2301,16 @@ async def seller_order_details(
         "store_id"
     )
 
-    if not store_id or not is_store_member(
-        user_id,
-        store_id,
+    if (
+        not store_id
+        or not is_store_member(
+            user_id,
+            store_id,
+        )
     ):
-        await query.answer(
-            "Нет доступа к этому заказу."
+        await safe_query_answer(
+            query,
+            "Нет доступа к этому заказу.",
         )
         return
 
@@ -2384,8 +2334,10 @@ async def seller_order_details(
         f"📦 Заказ #{order.get('id')}\n\n"
         f"Товар: "
         f"{order.get('product_name') or 'Товар'}\n"
-        f"Количество: {order.get('quantity', 1)}\n"
-        f"Сумма: {order.get('total_price', 0)} ₽\n"
+        f"Количество: "
+        f"{order.get('quantity', 1)}\n"
+        f"Сумма: "
+        f"{order.get('total_price', 0)} ₽\n"
         f"Покупатель: {buyer_name}\n"
         f"Статус: {status}"
     )
@@ -2438,6 +2390,9 @@ async def seller_order_details(
         ),
     )
 
+    if acknowledge:
+        await safe_query_answer(query)
+
 
 async def accept_order(
     update,
@@ -2451,14 +2406,15 @@ async def accept_order(
     orders = db_select(
         "orders",
         filters_dict={
-            "id": order_id
+            "id": order_id,
         },
         limit=1,
     )
 
     if not orders:
-        await query.answer(
-            "Заказ не найден."
+        await safe_query_answer(
+            query,
+            "Заказ не найден.",
         )
         return
 
@@ -2468,18 +2424,25 @@ async def accept_order(
         "store_id"
     )
 
-    if not store_id or not is_store_member(
-        user_id,
-        store_id,
+    if (
+        not store_id
+        or not is_store_member(
+            user_id,
+            store_id,
+        )
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
-    if order.get("status") != "pending":
-        await query.answer(
-            "Заказ уже обработан."
+    if order.get(
+        "status"
+    ) != "pending":
+        await safe_query_answer(
+            query,
+            "Заказ уже обработан.",
         )
         return
 
@@ -2494,14 +2457,16 @@ async def accept_order(
         },
     )
 
-    await query.answer(
-        "✅ Заказ принят!"
+    await safe_query_answer(
+        query,
+        "✅ Заказ принят!",
     )
 
     await seller_order_details(
         update,
         context,
         order_id,
+        acknowledge=False,
     )
 
     buyer_id = (
@@ -2531,14 +2496,15 @@ async def cancel_order(
     orders = db_select(
         "orders",
         filters_dict={
-            "id": order_id
+            "id": order_id,
         },
         limit=1,
     )
 
     if not orders:
-        await query.answer(
-            "Заказ не найден."
+        await safe_query_answer(
+            query,
+            "Заказ не найден.",
         )
         return
 
@@ -2548,14 +2514,18 @@ async def cancel_order(
         user_id,
         order.get("store_id"),
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
-    if order.get("status") != "pending":
-        await query.answer(
-            "Нельзя отменить этот заказ."
+    if order.get(
+        "status"
+    ) != "pending":
+        await safe_query_answer(
+            query,
+            "Нельзя отменить этот заказ.",
         )
         return
 
@@ -2584,13 +2554,15 @@ async def cancel_order(
         ),
     )
 
-    await query.answer(
-        "❌ Заказ отменён."
+    await safe_query_answer(
+        query,
+        "❌ Заказ отменён.",
     )
 
     await seller_orders(
         update,
         context,
+        acknowledge=False,
     )
 
 
@@ -2606,14 +2578,15 @@ async def complete_order(
     orders = db_select(
         "orders",
         filters_dict={
-            "id": order_id
+            "id": order_id,
         },
         limit=1,
     )
 
     if not orders:
-        await query.answer(
-            "Заказ не найден."
+        await safe_query_answer(
+            query,
+            "Заказ не найден.",
         )
         return
 
@@ -2623,14 +2596,18 @@ async def complete_order(
         user_id,
         order.get("store_id"),
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
-    if order.get("status") != "accepted":
-        await query.answer(
-            "Заказ ещё не принят."
+    if order.get(
+        "status"
+    ) != "accepted":
+        await safe_query_answer(
+            query,
+            "Заказ ещё не принят.",
         )
         return
 
@@ -2658,13 +2635,15 @@ async def complete_order(
         ),
     )
 
-    await query.answer(
-        "🎉 Заказ выполнен!"
+    await safe_query_answer(
+        query,
+        "🎉 Заказ выполнен!",
     )
 
     await seller_orders(
         update,
         context,
+        acknowledge=False,
     )
 
 
@@ -2672,12 +2651,17 @@ async def complete_order(
 # MY STORE
 # ============================================================
 
-async def my_store(update, context):
+async def my_store(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    store = get_user_store(user_id)
+    store = get_user_store(
+        user_id
+    )
 
     if not store:
         await query.edit_message_text(
@@ -2691,6 +2675,9 @@ async def my_store(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
     store_id = store["id"]
@@ -2754,6 +2741,8 @@ async def my_store(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 async def store_sellers(
     update,
@@ -2762,11 +2751,14 @@ async def store_sellers(
 ):
     query = update.callback_query
 
-    store = get_store(store_id)
+    store = get_store(
+        store_id
+    )
 
     if not store:
-        await query.answer(
-            "Магазин не найден."
+        await safe_query_answer(
+            query,
+            "Магазин не найден.",
         )
         return
 
@@ -2774,22 +2766,25 @@ async def store_sellers(
         query.from_user.id,
         store_id,
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
-
-    members = get_store_member_ids(
-        store_id
-    )
 
     text = (
         f"👥 Продавцы магазина "
         f"«{store.get('name')}»:\n\n"
     )
 
+    members = get_store_member_ids(
+        store_id
+    )
+
     for member_id in members:
-        member = get_user(member_id)
+        member = get_user(
+            member_id
+        )
 
         if not member:
             continue
@@ -2804,7 +2799,9 @@ async def store_sellers(
         )
 
         if username:
-            name += f" (@{username})"
+            name += (
+                f" (@{username})"
+            )
 
         if member_id == store.get(
             "owner_id"
@@ -2829,128 +2826,22 @@ async def store_sellers(
         ),
     )
 
-
-# ============================================================
-# OLD STORE STATS CALLBACK
-# ============================================================
-
-async def store_stats(update, context):
-    query = update.callback_query
-
-    await query.answer(
-        "📊 Статистика магазина пока недоступна."
-    )
+    await safe_query_answer(query)
 
 
 # ============================================================
-# REQUEST INFO
+# STORE STATS
 # ============================================================
 
-async def request_info(
+async def store_stats(
     update,
     context,
-    request_id,
 ):
     query = update.callback_query
 
-    user_id = query.from_user.id
-
-    requests = db_select(
-        "store_seller_requests",
-        filters_dict={
-            "id": request_id
-        },
-        limit=1,
-    )
-
-    if not requests:
-        await query.answer(
-            "Запрос не найден."
-        )
-        return
-
-    request = requests[0]
-
-    if request.get("receiver_id") != user_id:
-        await query.answer(
-            "Нет доступа к этому запросу."
-        )
-        return
-
-    if request.get("status") != "pending":
-        await query.answer(
-            "Запрос уже обработан."
-        )
-        return
-
-    sender = get_user(
-        request.get("sender_id")
-    )
-
-    store = get_store(
-        request.get("store_id")
-    )
-
-    sender_name = (
-        sender.get("first_name")
-        if sender
-        else "Пользователь"
-    )
-
-    username = (
-        sender.get("username")
-        if sender
-        else None
-    )
-
-    store_name = (
-        store.get("name")
-        if store
-        else "Магазин"
-    )
-
-    text = (
-        "📨 Запрос в магазин\n\n"
-        f"👤 Пользователь: {sender_name}\n"
-    )
-
-    if username:
-        text += f"Username: @{username}\n"
-
-    text += (
-        f"🆔 ID: {request.get('sender_id')}\n"
-        f"🏪 Магазин: {store_name}\n\n"
-        "Добавить пользователя в продавцы?"
-    )
-
-    buttons = [
-        [
-            InlineKeyboardButton(
-                "✅ Одобрить",
-                callback_data=(
-                    f"approve_request_{request_id}"
-                ),
-            ),
-            InlineKeyboardButton(
-                "❌ Отклонить",
-                callback_data=(
-                    f"reject_request_{request_id}"
-                ),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="seller_requests",
-            )
-        ],
-    ]
-
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
+    await safe_query_answer(
+        query,
+        "📊 Статистика магазина пока недоступна.",
     )
 
 
@@ -2958,7 +2849,10 @@ async def request_info(
 # TASKS
 # ============================================================
 
-async def show_tasks(update, context):
+async def show_tasks(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
@@ -2966,7 +2860,7 @@ async def show_tasks(update, context):
     tasks = db_select(
         "tasks",
         filters_dict={
-            "user_id": user_id
+            "user_id": user_id,
         },
     )
 
@@ -3004,7 +2898,9 @@ async def show_tasks(update, context):
             },
         )
 
-    text = "📋 Задания:\n\n"
+    text = (
+        "📋 Задания:\n\n"
+    )
 
     for task in tasks:
         mark = (
@@ -3031,17 +2927,24 @@ async def show_tasks(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # SWITCH ROLES
 # ============================================================
 
-async def become_seller(update, context):
+async def become_seller(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    stores = get_user_stores(user_id)
+    stores = get_user_stores(
+        user_id
+    )
 
     if stores:
         set_role(
@@ -3052,8 +2955,12 @@ async def become_seller(update, context):
         await query.edit_message_text(
             "💼 Ты уже являешься продавцом.\n\n"
             "Переключаю тебя в меню продавца.",
-            reply_markup=seller_menu(user_id),
+            reply_markup=seller_menu(
+                user_id
+            ),
         )
+
+        await safe_query_answer(query)
 
         return
 
@@ -3081,8 +2988,13 @@ async def become_seller(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def switch_buyer(update, context):
+
+async def switch_buyer(
+    update,
+    context,
+):
     query = update.callback_query
 
     set_role(
@@ -3097,17 +3009,24 @@ async def switch_buyer(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # SELLER MENU
 # ============================================================
 
-async def show_seller_menu(update, context):
+async def show_seller_menu(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    user = get_user(user_id)
+    user = get_user(
+        user_id
+    )
 
     if not user:
         ensure_user(
@@ -3121,17 +3040,24 @@ async def show_seller_menu(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # MY PRODUCTS
 # ============================================================
 
-async def my_products(update, context):
+async def my_products(
+    update,
+    context,
+):
     query = update.callback_query
 
     user_id = query.from_user.id
 
-    stores = get_user_stores(user_id)
+    stores = get_user_stores(
+        user_id
+    )
 
     if not stores:
         await query.edit_message_text(
@@ -3145,6 +3071,9 @@ async def my_products(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
     store_ids = {
@@ -3153,13 +3082,14 @@ async def my_products(update, context):
     }
 
     products = db_select(
-        "products",
+        "products"
     )
 
     products = [
         p
         for p in products
-        if p.get("store_id") in store_ids
+        if p.get("store_id")
+        in store_ids
     ]
 
     if not products:
@@ -3174,21 +3104,21 @@ async def my_products(update, context):
                 ]]
             ),
         )
+
+        await safe_query_answer(query)
+
         return
 
-    text = "📦 Твои товары:\n\n"
+    text = (
+        "📦 Твои товары:\n\n"
+    )
 
     for product in products:
-        badge = (
-            "🆕 "
-            if is_new_product(product)
-            else ""
-        )
-
         text += (
-            f"{badge}{product.get('name')}\n"
+            f"{product_title(product)}\n"
             f"💰 {product.get('price', 0)} ₽\n"
-            f"📦 Остаток: {product.get('stock', 0)}\n\n"
+            f"📦 Остаток: "
+            f"{product.get('stock', 0)}\n\n"
         )
 
     await query.edit_message_text(
@@ -3203,12 +3133,17 @@ async def my_products(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # NEARBY STORES
 # ============================================================
 
-async def nearby_stores(update, context):
+async def nearby_stores(
+    update,
+    context,
+):
     query = update.callback_query
 
     await query.edit_message_text(
@@ -3228,8 +3163,13 @@ async def nearby_stores(update, context):
         "awaiting_location"
     ] = True
 
+    await safe_query_answer(query)
 
-async def receive_location(update, context):
+
+async def receive_location(
+    update,
+    context,
+):
     if not context.user_data.get(
         "awaiting_location"
     ):
@@ -3245,14 +3185,19 @@ async def receive_location(update, context):
     longitude = location.longitude
 
     stores = db_select(
-        "stores",
+        "stores"
     )
 
     nearby = []
 
     for store in stores:
-        lat = store.get("latitude")
-        lon = store.get("longitude")
+        lat = store.get(
+            "latitude"
+        )
+
+        lon = store.get(
+            "longitude"
+        )
 
         if lat is None or lon is None:
             continue
@@ -3266,9 +3211,9 @@ async def receive_location(update, context):
         )
 
         distance = (
-            (lat_diff ** 2 + lon_diff ** 2)
-            ** 0.5
-        )
+            lat_diff ** 2
+            + lon_diff ** 2
+        ) ** 0.5
 
         nearby.append(
             (
@@ -3290,9 +3235,12 @@ async def receive_location(update, context):
                 update.effective_user.id
             ),
         )
+
         return
 
-    text = "📍 Магазины рядом:\n\n"
+    text = (
+        "📍 Магазины рядом:\n\n"
+    )
 
     buttons = []
 
@@ -3329,14 +3277,18 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 
-async def admin_panel(update, context):
+async def admin_panel(
+    update,
+    context,
+):
     query = update.callback_query
 
     if not is_admin(
         query.from_user.id
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -3381,15 +3333,21 @@ async def admin_panel(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def admin_users(update, context):
+
+async def admin_users(
+    update,
+    context,
+):
     query = update.callback_query
 
     if not is_admin(
         query.from_user.id
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -3400,7 +3358,9 @@ async def admin_users(update, context):
         limit=30,
     )
 
-    text = "👥 Пользователи:\n\n"
+    text = (
+        "👥 Пользователи:\n\n"
+    )
 
     for user in users:
         text += (
@@ -3423,15 +3383,21 @@ async def admin_users(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def admin_stores(update, context):
+
+async def admin_stores(
+    update,
+    context,
+):
     query = update.callback_query
 
     if not is_admin(
         query.from_user.id
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -3441,7 +3407,9 @@ async def admin_stores(update, context):
         ascending=False,
     )
 
-    text = "🏪 Магазины:\n\n"
+    text = (
+        "🏪 Магазины:\n\n"
+    )
 
     for store in stores:
         members = get_store_member_ids(
@@ -3453,7 +3421,8 @@ async def admin_stores(update, context):
             f"{store.get('name')}\n"
             f"👑 Владелец: "
             f"{store.get('owner_id')}\n"
-            f"👥 Продавцов: {len(members)}\n\n"
+            f"👥 Продавцов: "
+            f"{len(members)}\n\n"
         )
 
     await query.edit_message_text(
@@ -3468,15 +3437,21 @@ async def admin_stores(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def admin_products(update, context):
+
+async def admin_products(
+    update,
+    context,
+):
     query = update.callback_query
 
     if not is_admin(
         query.from_user.id
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -3487,18 +3462,14 @@ async def admin_products(update, context):
         limit=50,
     )
 
-    text = "📦 Товары:\n\n"
+    text = (
+        "📦 Товары:\n\n"
+    )
 
     for product in products:
-        badge = (
-            "🆕 "
-            if is_new_product(product)
-            else ""
-        )
-
         text += (
             f"#{product.get('id')} "
-            f"{badge}{product.get('name')}\n"
+            f"{product_title(product)}\n"
             f"💰 {product.get('price', 0)} ₽\n"
             f"📦 {product.get('stock', 0)}\n"
             f"🏪 {product.get('store_id') or '—'}\n\n"
@@ -3516,15 +3487,21 @@ async def admin_products(update, context):
         ),
     )
 
+    await safe_query_answer(query)
 
-async def admin_orders(update, context):
+
+async def admin_orders(
+    update,
+    context,
+):
     query = update.callback_query
 
     if not is_admin(
         query.from_user.id
     ):
-        await query.answer(
-            "Нет доступа."
+        await safe_query_answer(
+            query,
+            "Нет доступа.",
         )
         return
 
@@ -3535,7 +3512,9 @@ async def admin_orders(update, context):
         limit=50,
     )
 
-    text = "🛒 Заказы:\n\n"
+    text = (
+        "🛒 Заказы:\n\n"
+    )
 
     for order in orders:
         text += (
@@ -3546,7 +3525,8 @@ async def admin_orders(update, context):
             f"{order.get('buyer_id') or order.get('user_id')}\n"
             f"💼 Продавец: "
             f"{order.get('seller_id') or '—'}\n"
-            f"Статус: {order.get('status')}\n\n"
+            f"Статус: "
+            f"{order.get('status')}\n\n"
         )
 
     await query.edit_message_text(
@@ -3561,12 +3541,17 @@ async def admin_orders(update, context):
         ),
     )
 
+    await safe_query_answer(query)
+
 
 # ============================================================
 # BACK TO MENU
 # ============================================================
 
-async def back_menu(update, context):
+async def back_menu(
+    update,
+    context,
+):
     query = update.callback_query
 
     user = get_user(
@@ -3582,15 +3567,17 @@ async def back_menu(update, context):
             query.from_user.id
         )
 
-    if user and user.get(
-        "role"
-    ) == "seller":
+    if (
+        user
+        and user.get("role") == "seller"
+    ):
         await query.edit_message_text(
             "💼 Меню продавца",
             reply_markup=seller_menu(
                 query.from_user.id
             ),
         )
+
     else:
         await query.edit_message_text(
             "🛍 Главное меню",
@@ -3598,6 +3585,8 @@ async def back_menu(update, context):
                 query.from_user.id
             ),
         )
+
+    await safe_query_answer(query)
 
 
 # ============================================================
@@ -3609,12 +3598,13 @@ async def callback_router(
     context,
 ):
     query = update.callback_query
+
     data = query.data or ""
 
     try:
 
         # ----------------------------------------------------
-        # OLD / STALE STORE STATS BUTTON
+        # OLD STORE STATS
         # ----------------------------------------------------
 
         if data == "store_stats":
@@ -3631,101 +3621,61 @@ async def callback_router(
         if data.startswith(
             "approve_request_"
         ):
-            suffix = data[
-                len("approve_request_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный запрос."
-                )
-                return
+            request_id = int(
+                data.split("_")[-1]
+            )
 
             await approve_request(
                 update,
                 context,
-                int(suffix),
+                request_id,
             )
+
             return
 
         if data.startswith(
             "reject_request_"
         ):
-            suffix = data[
-                len("reject_request_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный запрос."
-                )
-                return
+            request_id = int(
+                data.split("_")[-1]
+            )
 
             await reject_request(
                 update,
                 context,
-                int(suffix),
+                request_id,
             )
-            return
 
-        if data.startswith(
-            "request_info_"
-        ):
-            suffix = data[
-                len("request_info_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный запрос."
-                )
-                return
-
-            await request_info(
-                update,
-                context,
-                int(suffix),
-            )
             return
 
         if data.startswith(
             "approve_invite_"
         ):
-            suffix = data[
-                len("approve_invite_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректное приглашение."
-                )
-                return
+            request_id = int(
+                data.split("_")[-1]
+            )
 
             await approve_invite(
                 update,
                 context,
-                int(suffix),
+                request_id,
             )
+
             return
 
         if data.startswith(
             "reject_invite_"
         ):
-            suffix = data[
-                len("reject_invite_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректное приглашение."
-                )
-                return
+            request_id = int(
+                data.split("_")[-1]
+            )
 
             await reject_invite(
                 update,
                 context,
-                int(suffix),
+                request_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -3735,21 +3685,16 @@ async def callback_router(
         if data.startswith(
             "join_store_"
         ):
-            suffix = data[
-                len("join_store_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный магазин."
-                )
-                return
+            store_id = int(
+                data.split("_")[-1]
+            )
 
             await join_store(
                 update,
                 context,
-                int(suffix),
+                store_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -3759,81 +3704,61 @@ async def callback_router(
         if data.startswith(
             "seller_order_"
         ):
-            suffix = data[
-                len("seller_order_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный заказ."
-                )
-                return
+            order_id = int(
+                data.split("_")[-1]
+            )
 
             await seller_order_details(
                 update,
                 context,
-                int(suffix),
+                order_id,
             )
+
             return
 
         if data.startswith(
             "accept_order_"
         ):
-            suffix = data[
-                len("accept_order_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный заказ."
-                )
-                return
+            order_id = int(
+                data.split("_")[-1]
+            )
 
             await accept_order(
                 update,
                 context,
-                int(suffix),
+                order_id,
             )
+
             return
 
         if data.startswith(
             "cancel_order_"
         ):
-            suffix = data[
-                len("cancel_order_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный заказ."
-                )
-                return
+            order_id = int(
+                data.split("_")[-1]
+            )
 
             await cancel_order(
                 update,
                 context,
-                int(suffix),
+                order_id,
             )
+
             return
 
         if data.startswith(
             "complete_order_"
         ):
-            suffix = data[
-                len("complete_order_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный заказ."
-                )
-                return
+            order_id = int(
+                data.split("_")[-1]
+            )
 
             await complete_order(
                 update,
                 context,
-                int(suffix),
+                order_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -3843,21 +3768,16 @@ async def callback_router(
         if data.startswith(
             "store_sellers_"
         ):
-            suffix = data[
-                len("store_sellers_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный магазин."
-                )
-                return
+            store_id = int(
+                data.split("_")[-1]
+            )
 
             await store_sellers(
                 update,
                 context,
-                int(suffix),
+                store_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -3867,61 +3787,46 @@ async def callback_router(
         if data.startswith(
             "addcart_"
         ):
-            suffix = data[
-                len("addcart_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный товар."
-                )
-                return
+            product_id = int(
+                data.split("_")[-1]
+            )
 
             await add_to_cart(
                 update,
                 context,
-                int(suffix),
+                product_id,
             )
+
             return
 
         if data.startswith(
             "buy_"
         ):
-            suffix = data[
-                len("buy_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный товар."
-                )
-                return
+            product_id = int(
+                data.split("_")[-1]
+            )
 
             await buy_product(
                 update,
                 context,
-                int(suffix),
+                product_id,
             )
+
             return
 
         if data.startswith(
             "product_"
         ):
-            suffix = data[
-                len("product_"):
-            ]
-
-            if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Некорректный товар."
-                )
-                return
+            product_id = int(
+                data.split("_")[-1]
+            )
 
             await show_product(
                 update,
                 context,
-                int(suffix),
+                product_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -3935,20 +3840,23 @@ async def callback_router(
                 len("store_"):
             ]
 
-            # Главное исправление:
-            # store_stats и другие старые callback_data
-            # больше не приводят к int("stats").
             if not suffix.isdigit():
-                await query.answer(
-                    "⚠️ Старая кнопка больше не действует."
+                await safe_query_answer(
+                    query,
+                    "⚠️ Старая кнопка больше не действует.",
                 )
                 return
+
+            store_id = int(
+                suffix
+            )
 
             await show_store(
                 update,
                 context,
-                int(suffix),
+                store_id,
             )
+
             return
 
         # ----------------------------------------------------
@@ -4043,13 +3951,6 @@ async def callback_router(
             )
             return
 
-        if data == "checkout_cart":
-            await checkout_cart(
-                update,
-                context,
-            )
-            return
-
         if data == "buyer_orders":
             await buyer_orders(
                 update,
@@ -4117,8 +4018,9 @@ async def callback_router(
         # UNKNOWN
         # ----------------------------------------------------
 
-        await query.answer(
-            "Неизвестная команда."
+        await safe_query_answer(
+            query,
+            "Неизвестная команда.",
         )
 
     except Exception as e:
@@ -4126,19 +4028,20 @@ async def callback_router(
             f"[CALLBACK ERROR] {data}: {e}"
         )
 
-        try:
-            await query.answer(
-                "⚠️ Произошла ошибка."
-            )
-        except Exception:
-            pass
+        await safe_query_answer(
+            query,
+            "⚠️ Произошла ошибка.",
+        )
 
 
 # ============================================================
 # TEXT HANDLER
 # ============================================================
 
-async def text_handler(update, context):
+async def text_handler(
+    update,
+    context,
+):
     if await process_seller_username(
         update,
         context,
@@ -4162,7 +4065,10 @@ async def text_handler(update, context):
 # LOCATION HANDLER
 # ============================================================
 
-async def location_handler(update, context):
+async def location_handler(
+    update,
+    context,
+):
     await receive_location(
         update,
         context,
@@ -4179,7 +4085,9 @@ async def health(request):
     )
 
 
-async def start_web_server(application):
+async def start_web_server(
+    application,
+):
     port = int(
         os.getenv(
             "PORT",
@@ -4199,7 +4107,9 @@ async def start_web_server(application):
         health,
     )
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(
+        app
+    )
 
     await runner.setup()
 
@@ -4216,11 +4126,14 @@ async def start_web_server(application):
     ] = runner
 
     print(
-        f"[WEB] Health server started on port {port}"
+        f"[WEB] Health server started "
+        f"on port {port}"
     )
 
 
-async def stop_web_server(application):
+async def stop_web_server(
+    application,
+):
     runner = application.bot_data.get(
         "web_runner"
     )
@@ -4228,6 +4141,7 @@ async def stop_web_server(application):
     if runner:
         try:
             await runner.cleanup()
+
         except Exception as e:
             print(
                 f"[WEB CLEANUP ERROR] {e}"
@@ -4238,7 +4152,10 @@ async def stop_web_server(application):
 # ERROR HANDLER
 # ============================================================
 
-async def error_handler(update, context):
+async def error_handler(
+    update,
+    context,
+):
     print(
         "[BOT ERROR]",
         context.error,
@@ -4250,11 +4167,16 @@ async def error_handler(update, context):
 # ============================================================
 
 def main():
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .post_init(start_web_server)
-        .post_shutdown(stop_web_server)
+        .post_init(
+            start_web_server
+        )
+        .post_shutdown(
+            stop_web_server
+        )
         .build()
     )
 
