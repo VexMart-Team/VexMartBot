@@ -3,11 +3,15 @@ import asyncio
 from aiohttp import web
 
 from supabase import create_client
+
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
+from telegram.error import BadRequest
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -28,6 +32,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+
 if not TOKEN:
     raise RuntimeError("Не указан BOT_TOKEN")
 
@@ -35,7 +40,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Не указаны SUPABASE_URL или SUPABASE_KEY")
 
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
 
 
 # =========================================================
@@ -161,6 +169,25 @@ def get_all_rows(table_name):
     )
 
     return result.data or []
+
+
+# =========================================================
+# SAFE ERROR HANDLING
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    error = context.error
+
+    if (
+        isinstance(error, BadRequest)
+        and "Message is not modified" in str(error)
+    ):
+        return
+
+    print(f"Unhandled error: {error}")
 
 
 # =========================================================
@@ -307,7 +334,10 @@ def seller_menu(user_id=None):
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     user = update.effective_user
 
     db_user = create_user(user)
@@ -363,9 +393,11 @@ async def profile(query):
 
     await query.edit_message_text(
         text,
-        reply_markup=buyer_menu(query.from_user.id)
-        if role == "buyer"
-        else seller_menu(query.from_user.id)
+        reply_markup=(
+            buyer_menu(query.from_user.id)
+            if role == "buyer"
+            else seller_menu(query.from_user.id)
+        )
     )
 
 
@@ -460,7 +492,8 @@ async def show_search_results(query, search_text):
     search_text = search_text.lower()
 
     found = [
-        store for store in stores
+        store
+        for store in stores
         if search_text in store["name"].lower()
     ]
 
@@ -507,7 +540,6 @@ async def show_store(query, store_id):
 
     track_store_view(user_id, store_id)
 
-    # Награда за первый просмотр
     viewed = (
         supabase
         .table("viewed_stores")
@@ -628,7 +660,9 @@ async def buy_product(query, product_id, context):
     buyer = get_user(buyer_id)
 
     price = int(product["price"])
-    cashback = int(product.get("cashback", 5) or 0)
+    cashback = int(
+        product.get("cashback", 5) or 0
+    )
 
     if buyer["balance"] < price:
         await query.edit_message_text(
@@ -717,7 +751,10 @@ async def show_tasks(query):
             .execute()
         )
 
-        if completed.data and completed.data[0].get("completed"):
+        if (
+            completed.data
+            and completed.data[0].get("completed")
+        ):
             text += f"✅ {name} — выполнено\n"
         else:
             text += f"🟡 {name} — +{reward} VXC\n"
@@ -765,7 +802,10 @@ async def complete_task(query, task_id):
         .execute()
     )
 
-    if existing.data and existing.data[0].get("completed"):
+    if (
+        existing.data
+        and existing.data[0].get("completed")
+    ):
         await query.answer(
             "Задание уже выполнено!",
             show_alert=True
@@ -924,7 +964,8 @@ async def my_products(query):
             text += (
                 f"📦 {product['name']}\n"
                 f"💰 {product['price']} VXC\n"
-                f"🎁 Кешбэк: {product.get('cashback', 5)} VXC\n\n"
+                f"🎁 Кешбэк: "
+                f"{product.get('cashback', 5)} VXC\n\n"
             )
 
     await query.edit_message_text(
@@ -996,17 +1037,23 @@ async def store_stats(query):
     ).data or []
 
     done_orders = [
-        order for order in orders
+        order
+        for order in orders
         if order.get("status") == "done"
     ]
 
     new_orders = [
-        order for order in orders
+        order
+        for order in orders
         if order.get("status") != "done"
     ]
 
     revenue = sum(
-        int(order.get("price") or order.get("total_price") or 0)
+        int(
+            order.get("price")
+            or order.get("total_price")
+            or 0
+        )
         for order in orders
     )
 
@@ -1019,7 +1066,10 @@ async def store_stats(query):
 
     for order in orders:
         name = order.get("product_name") or "Неизвестно"
-        product_sales[name] = product_sales.get(name, 0) + 1
+
+        product_sales[name] = (
+            product_sales.get(name, 0) + 1
+        )
 
     top_product = "Нет продаж"
 
@@ -1273,22 +1323,26 @@ def get_admin_statistics():
     tasks = get_all_rows("tasks")
 
     buyers = [
-        user for user in users
+        user
+        for user in users
         if user.get("role") == "buyer"
     ]
 
     sellers = [
-        user for user in users
+        user
+        for user in users
         if user.get("role") == "seller"
     ]
 
     done_orders = [
-        order for order in orders
+        order
+        for order in orders
         if order.get("status") == "done"
     ]
 
     new_orders = [
-        order for order in orders
+        order
+        for order in orders
         if order.get("status") != "done"
     ]
 
@@ -1312,7 +1366,8 @@ def get_admin_statistics():
     )
 
     completed_tasks = [
-        task for task in tasks
+        task
+        for task in tasks
         if task.get("completed")
     ]
 
@@ -1358,7 +1413,8 @@ async def show_admin_panel_message(update):
         "🏪 МАГАЗИНЫ\n"
         f"Создано: {stats['stores']}\n"
         f"👀 Просмотров: {stats['store_views']}\n"
-        f"👤 Уникальных зрителей: {stats['unique_viewers']}\n\n"
+        f"👤 Уникальных зрителей: "
+        f"{stats['unique_viewers']}\n\n"
 
         "📦 ТОВАРЫ\n"
         f"Всего товаров: {stats['products']}\n\n"
@@ -1369,12 +1425,15 @@ async def show_admin_panel_message(update):
         f"🆕 Новых: {stats['new_orders']}\n\n"
 
         "💰 ЭКОНОМИКА\n"
-        f"VXC у пользователей: {stats['total_balance']}\n"
-        f"Оборот заказов: {stats['turnover']} VXC\n"
+        f"VXC у пользователей: "
+        f"{stats['total_balance']}\n"
+        f"Оборот заказов: "
+        f"{stats['turnover']} VXC\n"
         f"Кешбэк: {stats['cashback']} VXC\n\n"
 
         "🎯 ЗАДАНИЯ\n"
-        f"Выполнено: {stats['completed_tasks']}"
+        f"Выполнено: "
+        f"{stats['completed_tasks']}"
     )
 
     await update.message.reply_text(
@@ -1407,10 +1466,11 @@ async def admin_panel(query):
         "🏪 МАГАЗИНЫ\n"
         f"Создано: {stats['stores']}\n"
         f"👀 Просмотров: {stats['store_views']}\n"
-        f"👤 Уникальных зрителей: {stats['unique_viewers']}\n\n"
+        f"👤 Уникальных зрителей: "
+        f"{stats['unique_viewers']}\n\n"
 
         "📦 ТОВАРЫ\n"
-        f"Всего: {stats['products']}\n\n"
+        f"Всего товаров: {stats['products']}\n\n"
 
         "🛒 ЗАКАЗЫ\n"
         f"Всего: {stats['orders']}\n"
@@ -1418,12 +1478,14 @@ async def admin_panel(query):
         f"🆕 Новых: {stats['new_orders']}\n\n"
 
         "💰 ЭКОНОМИКА\n"
-        f"VXC у пользователей: {stats['total_balance']}\n"
+        f"VXC у пользователей: "
+        f"{stats['total_balance']}\n"
         f"Оборот: {stats['turnover']} VXC\n"
         f"Кешбэк: {stats['cashback']} VXC\n\n"
 
         "🎯 ЗАДАНИЯ\n"
-        f"Выполнено: {stats['completed_tasks']}"
+        f"Выполнено: "
+        f"{stats['completed_tasks']}"
     )
 
     await query.edit_message_text(
@@ -1450,7 +1512,8 @@ async def admin_list(query, table_name, title):
         for row in rows[:50]:
             if table_name == "users":
                 text += (
-                    f"👤 {row.get('first_name', 'Без имени')} "
+                    f"👤 "
+                    f"{row.get('first_name', 'Без имени')} "
                     f"(ID {row.get('id')})\n"
                     f"💰 {row.get('balance', 0)} VXC\n"
                     f"Роль: {row.get('role')}\n\n"
@@ -1460,22 +1523,27 @@ async def admin_list(query, table_name, title):
                 text += (
                     f"🏪 {row.get('name')}\n"
                     f"ID: {row.get('id')}\n"
-                    f"Владелец: {row.get('owner_id')}\n\n"
+                    f"Владелец: "
+                    f"{row.get('owner_id')}\n\n"
                 )
 
             elif table_name == "products":
                 text += (
                     f"📦 {row.get('name')}\n"
                     f"ID: {row.get('id')}\n"
-                    f"Цена: {row.get('price')} VXC\n\n"
+                    f"Цена: "
+                    f"{row.get('price')} VXC\n\n"
                 )
 
             elif table_name == "orders":
                 text += (
                     f"🛒 Заказ #{row.get('id')}\n"
-                    f"Товар: {row.get('product_name')}\n"
-                    f"Цена: {row.get('price') or row.get('total_price')} VXC\n"
-                    f"Статус: {row.get('status')}\n\n"
+                    f"Товар: "
+                    f"{row.get('product_name')}\n"
+                    f"Цена: "
+                    f"{row.get('price') or row.get('total_price')} VXC\n"
+                    f"Статус: "
+                    f"{row.get('status')}\n\n"
                 )
 
     await query.edit_message_text(
@@ -1495,7 +1563,10 @@ async def admin_list(query, table_name, title):
 # TEXT INPUT
 # =========================================================
 
-async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
@@ -1507,7 +1578,8 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stores = get_all_rows("stores")
 
         found = [
-            store for store in stores
+            store
+            for store in stores
             if text.lower() in store["name"].lower()
         ]
 
@@ -1519,7 +1591,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result_text += "Ничего не найдено."
         else:
             for store in found:
-                result_text += f"🏪 {store['name']}\n"
+                result_text += (
+                    f"🏪 {store['name']}\n"
+                )
 
                 buttons.append([
                     InlineKeyboardButton(
@@ -1544,7 +1618,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "create_store":
         context.user_data["store_name"] = text
-        context.user_data["action"] = "create_store_description"
+        context.user_data["action"] = (
+            "create_store_description"
+        )
 
         await update.message.reply_text(
             "📝 Теперь введи описание магазина:"
@@ -1579,7 +1655,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "add_product_name":
         context.user_data["product_name"] = text
-        context.user_data["action"] = "add_product_description"
+        context.user_data["action"] = (
+            "add_product_description"
+        )
 
         await update.message.reply_text(
             "📝 Введи описание товара:"
@@ -1589,7 +1667,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "add_product_description":
         context.user_data["product_description"] = text
-        context.user_data["action"] = "add_product_price"
+        context.user_data["action"] = (
+            "add_product_price"
+        )
 
         await update.message.reply_text(
             "💰 Введи цену товара в VXC:"
@@ -1608,7 +1688,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         store_id = context.user_data.get("store_id")
         name = context.user_data.get("product_name")
-        description = context.user_data.get("product_description")
+        description = context.user_data.get(
+            "product_description"
+        )
 
         supabase.table("products").insert({
             "name": name,
@@ -1633,12 +1715,12 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACK BUTTONS
 # =========================================================
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     query = update.callback_query
 
-    # Безопасно отвечаем на callback.
-    # Если Telegram уже сделал запрос просроченным,
-    # ошибка не должна ломать обработчик кнопки.
     try:
         await query.answer()
     except Exception:
@@ -1792,7 +1874,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("buy_"):
         product_id = int(data.split("_")[1])
-        await buy_product(query, product_id, context)
+        await buy_product(
+            query,
+            product_id,
+            context
+        )
         return
 
     # -----------------------------------------------------
@@ -1846,7 +1932,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("complete_"):
         order_id = int(data.split("_")[1])
-        await complete_order(query, order_id, context)
+
+        await complete_order(
+            query,
+            order_id,
+            context
+        )
+
         return
 
 
@@ -1872,12 +1964,21 @@ async def main():
         .build()
     )
 
-    application.add_handler(
-        CommandHandler("start", start)
+    application.add_error_handler(
+        error_handler
     )
 
     application.add_handler(
-        CallbackQueryHandler(button)
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            button
+        )
     )
 
     application.add_handler(
@@ -1892,12 +1993,22 @@ async def main():
     await application.updater.start_polling()
 
     app = web.Application()
-    app.router.add_get("/", health)
+
+    app.router.add_get(
+        "/",
+        health
+    )
 
     runner = web.AppRunner(app)
+
     await runner.setup()
 
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
 
     site = web.TCPSite(
         runner,
