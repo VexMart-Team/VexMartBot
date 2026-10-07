@@ -27,7 +27,11 @@ from telegram.ext import (
 VERSION = "0.44.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_IDS = {
+    int(admin_id.strip())
+    for admin_id in os.getenv("ADMIN_IDS", "").split(",")
+    if admin_id.strip()
+}
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -45,7 +49,6 @@ supabase: Client = create_client(
     SUPABASE_URL,
     SUPABASE_KEY,
 )
-
 
 # ============================================================
 # DATABASE HELPERS
