@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
@@ -24,7 +25,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.44.0"
+VERSION = "0.45.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -524,6 +525,440 @@ def product_title(product):
     return title
 
 
+
+# ============================================================
+# VEXMART 0.45 — CATEGORIES / SEARCH / MAP
+# ============================================================
+
+def get_categories():
+    return db_select(
+        "categories",
+        order_by="id",
+        ascending=True,
+    )
+
+
+def get_category(category_id):
+    rows = db_select(
+        "categories",
+        filters_dict={"id": category_id},
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def get_product_category(product):
+    category_id = product.get("category_id")
+    if not category_id:
+        return None
+    return get_category(category_id)
+
+
+def category_name(product):
+    category = get_product_category(product)
+    return category.get("name") if category else None
+
+
+def product_search_score(product, query_words, max_price=None):
+    name = str(product.get("name") or "").lower()
+    description = str(product.get("description") or "").lower()
+    category = str(category_name(product) or "").lower()
+    haystack = f"{name} {description} {category}"
+
+    score = 0
+    for word in query_words:
+        if word in name:
+            score += 6
+        elif word in category:
+            score += 4
+        elif word in description:
+            score += 2
+
+    if max_price is not None:
+        price = int(product.get("price", 0) or 0)
+        if price <= max_price:
+            score += 3
+        else:
+            score -= 5
+
+    return score
+
+
+def smart_search_products(query_text):
+    text = str(query_text or "").strip().lower()
+
+    price_matches = re.findall(
+        r"(?:до|<=|не\s+дороже|максимум|max)\s*(\d+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    max_price = int(price_matches[0]) if price_matches else None
+
+    cleaned = re.sub(
+        r"(?:до|<=|не\s+дороже|максимум|max)\s*\d+",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    cleaned = re.sub(r"[^\wа-яё]+", " ", cleaned, flags=re.IGNORECASE)
+    stop_words = {
+        "мне", "надо", "нужен", "нужна", "нужно", "хочу",
+        "что", "то", "чтобы", "какой", "какая", "какое",
+        "какие", "товар", "товары", "купить", "есть",
+        "до", "руб", "рублей", "р", "vxc",
+    }
+
+    words = [
+        word for word in cleaned.split()
+        if len(word) >= 2 and word not in stop_words
+    ]
+
+    products = db_select("products")
+    products = [
+        product for product in products
+        if int(product.get("stock", 0) or 0) > 0
+    ]
+
+    scored = []
+    for product in products:
+        score = product_search_score(
+            product,
+            words,
+            max_price,
+        )
+
+        if max_price is not None and int(product.get("price", 0) or 0) > max_price:
+            if score <= 0:
+                continue
+
+        if words and score <= 0:
+            continue
+
+        if not words and max_price is None:
+            continue
+
+        scored.append((score, product))
+
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            -int(item[1].get("price", 0) or 0),
+        ),
+        reverse=True,
+    )
+
+    return [product for _, product in scored[:20]]
+
+
+def product_button_text(product):
+    category = category_name(product)
+    suffix = f" · {category}" if category else ""
+    return (
+        f"{product_title(product)} — "
+        f"{product.get('price', 0)} ₽"
+        f"{suffix}"
+    )
+
+
+async def show_categories(update, context):
+    query = update.callback_query
+    categories = get_categories()
+
+    if not categories:
+        await query.edit_message_text(
+            "🗂 Категорий пока нет.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⬅️ Назад",
+                    callback_data="back_menu",
+                )]
+            ]),
+        )
+        await safe_query_answer(query)
+        return
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"🗂 {category.get('name')}",
+                callback_data=f"category_{category.get('id')}",
+            )
+        ]
+        for category in categories
+    ]
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Назад",
+            callback_data="back_menu",
+        )
+    ])
+
+    await query.edit_message_text(
+        "🗂 Категории товаров\n\nВыбери категорию:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    await safe_query_answer(query)
+
+
+async def show_category_products(update, context, category_id):
+    query = update.callback_query
+    category = get_category(category_id)
+
+    if not category:
+        await safe_query_answer(query, "Категория не найдена.")
+        return
+
+    products = db_select(
+        "products",
+        filters_dict={"category_id": category_id},
+    )
+    products = [
+        product for product in products
+        if int(product.get("stock", 0) or 0) > 0
+    ]
+
+    if not products:
+        await query.edit_message_text(
+            f"🗂 {category.get('name')}\n\n"
+            "В этой категории пока нет товаров в наличии.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⬅️ К категориям",
+                    callback_data="categories",
+                )]
+            ]),
+        )
+        await safe_query_answer(query)
+        return
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                product_button_text(product),
+                callback_data=f"product_{product.get('id')}",
+            )
+        ]
+        for product in products
+    ]
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ К категориям",
+            callback_data="categories",
+        )
+    ])
+
+    await query.edit_message_text(
+        f"🗂 {category.get('name')}\n\n"
+        "Товары в наличии:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    await safe_query_answer(query)
+
+
+async def smart_search_start(update, context):
+    query = update.callback_query
+    context.user_data["awaiting_smart_search"] = True
+
+    await query.edit_message_text(
+        "🧠 Умный поиск\n\n"
+        "Напиши, что тебе нужно.\n"
+        "Например:\n"
+        "«мне надо что-то деревянное до 100 VXC»\n\n"
+        "Я попробую найти подходящие товары.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="back_menu",
+            )]
+        ]),
+    )
+    await safe_query_answer(query)
+
+
+async def process_smart_search(update, context):
+    if not context.user_data.get("awaiting_smart_search"):
+        return False
+
+    context.user_data.pop("awaiting_smart_search", None)
+
+    query_text = update.message.text.strip()
+    products = smart_search_products(query_text)
+
+    if not products:
+        await update.message.reply_text(
+            "🔎 Подходящих товаров не нашёл.\n\n"
+            "Попробуй изменить описание или указать другой бюджет.",
+            reply_markup=buyer_menu(update.effective_user.id),
+        )
+        return True
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                product_button_text(product),
+                callback_data=f"product_{product.get('id')}",
+            )
+        ]
+        for product in products
+    ]
+
+    await update.message.reply_text(
+        "🧠 Результаты умного поиска:\n\n"
+        f"Запрос: «{query_text}»\n\n"
+        "Найденные товары:",
+        reply_markup=InlineKeyboardMarkup(
+            buttons + [[InlineKeyboardButton(
+                "⬅️ В меню",
+                callback_data="back_menu",
+            )]]
+        ),
+    )
+    return True
+
+
+async def show_store_map(update, context):
+    query = update.callback_query
+    stores = db_select("stores")
+
+    stores_with_location = [
+        store for store in stores
+        if store.get("latitude") is not None
+        and store.get("longitude") is not None
+    ]
+
+    if not stores_with_location:
+        await query.edit_message_text(
+            "🗺 Карта магазинов\n\n"
+            "Пока ни у одного магазина не указаны координаты.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⬅️ Назад",
+                    callback_data="back_menu",
+                )]
+            ]),
+        )
+        await safe_query_answer(query)
+        return
+
+    buttons = []
+    for store in stores_with_location:
+        lat = float(store["latitude"])
+        lon = float(store["longitude"])
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"📍 {store.get('name', 'Магазин')}",
+                url=f"https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map",
+            )
+        ])
+
+    await query.edit_message_text(
+        "🗺 Магазины на карте\n\n"
+        "Нажми на магазин, чтобы открыть его расположение:",
+        reply_markup=InlineKeyboardMarkup(
+            buttons + [[InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="back_menu",
+            )]]
+        ),
+    )
+    await safe_query_answer(query)
+
+
+async def choose_product_category(update, context, product_id):
+    query = update.callback_query
+    product = get_product(product_id)
+
+    if not product:
+        await safe_query_answer(query, "Товар не найден.")
+        return
+
+    if not is_store_member(
+        query.from_user.id,
+        product.get("store_id"),
+    ):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
+        return
+
+    categories = get_categories()
+    buttons = []
+
+    for category in categories:
+        buttons.append([
+            InlineKeyboardButton(
+                f"🗂 {category.get('name')}",
+                callback_data=(
+                    f"set_product_category_"
+                    f"{product_id}_{category.get('id')}"
+                ),
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🚫 Без категории",
+            callback_data=f"set_product_category_{product_id}_0",
+        )
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Назад",
+            callback_data=f"edit_product_{product_id}",
+        )
+    ])
+
+    await query.edit_message_text(
+        "🗂 Выбор категории\n\n"
+        f"📦 {product.get('name')}\n\n"
+        "Выбери категорию:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+    await safe_query_answer(query)
+
+
+async def set_product_category(update, context, product_id, category_id):
+    query = update.callback_query
+    product = get_product(product_id)
+
+    if not product:
+        await safe_query_answer(query, "Товар не найден.")
+        return
+
+    if not is_store_member(
+        query.from_user.id,
+        product.get("store_id"),
+    ):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
+        return
+
+    if category_id == 0:
+        db_update(
+            "products",
+            {"category_id": None},
+            {"id": product_id},
+        )
+        message = "🚫 Категория товара сброшена."
+    else:
+        category = get_category(category_id)
+        if not category:
+            await safe_query_answer(query, "Категория не найдена.", show_alert=True)
+            return
+
+        db_update(
+            "products",
+            {"category_id": category_id},
+            {"id": product_id},
+        )
+        message = f"🗂 Категория: {category.get('name')}"
+
+    await safe_query_answer(query, message, show_alert=True)
+    await edit_product_menu(update, context, product_id)
+
+
+
 # ============================================================
 # NOTIFICATIONS
 # ============================================================
@@ -581,8 +1016,22 @@ def buyer_menu(user_id=None):
         ],
         [
             InlineKeyboardButton(
+                "🧠 Умный поиск",
+                callback_data="smart_search",
+            ),
+            InlineKeyboardButton(
+                "🗂 Категории",
+                callback_data="categories",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 "📍 Магазины рядом",
                 callback_data="nearby_stores",
+            ),
+            InlineKeyboardButton(
+                "🗺 Карта магазинов",
+                callback_data="store_map",
             ),
         ],
         [
@@ -1408,9 +1857,7 @@ async def show_store(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"{product_title(product)} — "
-                    f"{product.get('price', 0)} ₽ "
-                    f"(ост. {product.get('stock', 0)})",
+                    product_button_text(product),
                     callback_data=(
                         f"product_{product['id']}"
                     ),
@@ -2626,11 +3073,14 @@ async def show_product(
             "⭐ Пока нет оценок"
         )
 
+    category = category_name(product)
+    category_text = f"🗂 Категория: {category}\n" if category else ""
+
     text = (
         f"📦 {title}\n\n"
         f"{product.get('description') or 'Описание отсутствует.'}\n\n"
         f"💰 Цена: {product.get('price', 0)} ₽\n"
-        f"📦 Остаток: {product.get('stock', 0)}\n"
+        f"{category_text}"
         f"{rating_text}"
     )
 
@@ -3097,6 +3547,14 @@ async def edit_product_menu(
         ],
         [
             InlineKeyboardButton(
+                "🗂 Категория",
+                callback_data=(
+                    f"edit_product_category_{product_id}"
+                ),
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 "⬅️ Назад",
                 callback_data="my_products",
             )
@@ -3108,7 +3566,8 @@ async def edit_product_menu(
         f"📦 {product.get('name')}\n"
         f"💰 {product.get('price', 0)} ₽\n"
         f"📦 Остаток: {product.get('stock', 0)}\n"
-        f"💸 Кэшбэк: {product.get('cashback', 0)} ₽\n\n"
+        f"💸 Кэшбэк: {product.get('cashback', 0)} ₽\n"
+        f"🗂 Категория: {category_name(product) or 'нет'}\n\n"
         "Что изменить?",
         reply_markup=InlineKeyboardMarkup(
             keyboard
@@ -4863,8 +5322,7 @@ async def my_products(
         text += (
             f"{product_title(product)}\n"
             f"💰 {product.get('price', 0)} ₽\n"
-            f"📦 Остаток: "
-            f"{product.get('stock', 0)}\n\n"
+            f"🗂 Категория: {category_name(product) or 'нет'}\n\n"
         )
 
         buttons.append(
@@ -5040,38 +5498,73 @@ async def admin_panel(
 ):
     query = update.callback_query
 
-    if not is_admin(
-        query.from_user.id
-    ):
+    if not is_admin(query.from_user.id):
         await safe_query_answer(
             query,
             "Нет доступа.",
         )
         return
 
+    users = db_select("users")
+    stores = db_select("stores")
+    products = db_select("products")
+    orders = db_select("orders")
+    categories = db_select("categories")
+
+    open_stores = sum(
+        1 for store in stores
+        if store_is_open(store)
+    )
+    stock_total = sum(
+        int(product.get("stock", 0) or 0)
+        for product in products
+    )
+    balance_total = sum(
+        int(user.get("balance", 0) or 0)
+        for user in users
+    )
+
+    status_counts = {}
+    for order in orders:
+        status = str(order.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    status_text = ", ".join(
+        f"{status}: {count}"
+        for status, count in sorted(status_counts.items())
+    ) or "нет заказов"
+
     buttons = [
         [
             InlineKeyboardButton(
-                "👥 Пользователи",
-                callback_data="admin_users",
+                "📊 Статистика",
+                callback_data="admin_stats",
             )
         ],
         [
             InlineKeyboardButton(
+                "👥 Пользователи",
+                callback_data="admin_users",
+            ),
+            InlineKeyboardButton(
                 "🏪 Магазины",
                 callback_data="admin_stores",
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
                 "📦 Товары",
                 callback_data="admin_products",
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
                 "🛒 Заказы",
                 callback_data="admin_orders",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🗂 Категории",
+                callback_data="admin_categories",
             )
         ],
         [
@@ -5082,15 +5575,122 @@ async def admin_panel(
         ],
     ]
 
-    await query.edit_message_text(
+    text = (
         "🛠 Админ-панель\n\n"
-        f"VexMart {VERSION}",
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
+        f"VexMart {VERSION}\n\n"
+        f"👥 Пользователей: {len(users)}\n"
+        f"🏪 Магазинов: {len(stores)} "
+        f"(🟢 {open_stores})\n"
+        f"📦 Товаров: {len(products)}\n"
+        f"📦 Единиц на складе: {stock_total}\n"
+        f"🗂 Категорий: {len(categories)}\n"
+        f"🛒 Заказов: {len(orders)}\n"
+        f"💰 Баланс пользователей: {balance_total} ₽\n\n"
+        f"📋 Статусы заказов: {status_text}"
     )
 
+    await query.edit_message_text(
+        text[:4000],
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
     await safe_query_answer(query)
+
+
+async def admin_stats(update, context):
+    query = update.callback_query
+
+    if not is_admin(query.from_user.id):
+        await safe_query_answer(query, "Нет доступа.")
+        return
+
+    users = db_select("users")
+    stores = db_select("stores")
+    products = db_select("products")
+    orders = db_select("orders")
+    reviews = db_select("product_reviews")
+    ratings = db_select("store_ratings")
+    visits = db_select("bot_visits")
+
+    completed = sum(
+        1 for order in orders
+        if order.get("status") == "completed"
+    )
+    pending = sum(
+        1 for order in orders
+        if order.get("status") in {"pending", "queued"}
+    )
+    total_sales = sum(
+        int(order.get("total_price", 0) or 0)
+        for order in orders
+        if order.get("status") == "completed"
+    )
+    total_stock = sum(
+        int(product.get("stock", 0) or 0)
+        for product in products
+    )
+
+    text = (
+        "📊 Техническая статистика VexMart\n\n"
+        f"👥 Пользователей: {len(users)}\n"
+        f"🏪 Магазинов: {len(stores)}\n"
+        f"📦 Товаров: {len(products)}\n"
+        f"📦 Остаток единиц: {total_stock}\n"
+        f"🛒 Заказов: {len(orders)}\n"
+        f"✅ Завершённых: {completed}\n"
+        f"⏳ Ожидающих: {pending}\n"
+        f"💰 Сумма завершённых продаж: {total_sales} ₽\n"
+        f"⭐ Отзывов: {len(reviews)}\n"
+        f"⭐ Оценок магазинов: {len(ratings)}\n"
+        f"👀 Посещений бота: {len(visits)}"
+    )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="admin",
+            )]
+        ]),
+    )
+    await safe_query_answer(query)
+
+
+async def admin_categories(update, context):
+    query = update.callback_query
+
+    if not is_admin(query.from_user.id):
+        await safe_query_answer(query, "Нет доступа.")
+        return
+
+    categories = get_categories()
+    products = db_select("products")
+
+    lines = ["🗂 Категории\n"]
+    for category in categories:
+        count = sum(
+            1 for product in products
+            if product.get("category_id") == category.get("id")
+        )
+        lines.append(
+            f"#{category.get('id')} "
+            f"{category.get('name')} — {count} товаров"
+        )
+
+    if not categories:
+        lines.append("Категорий пока нет.")
+
+    await query.edit_message_text(
+        "\n".join(lines)[:4000],
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "⬅️ Назад",
+                callback_data="admin",
+            )]
+        ]),
+    )
+    await safe_query_answer(query)
+
 
 
 async def admin_users(
@@ -5366,6 +5966,48 @@ async def callback_router(
             await show_achievements(
                 update,
                 context,
+            )
+            return
+
+        if data == "categories":
+            await show_categories(update, context)
+            return
+
+        if data.startswith("category_"):
+            await show_category_products(
+                update,
+                context,
+                int(data.split("_")[-1]),
+            )
+            return
+
+        if data == "smart_search":
+            await smart_search_start(update, context)
+            return
+
+        if data == "store_map":
+            await show_store_map(update, context)
+            return
+
+        if data == "edit_product_category":
+            await safe_query_answer(query)
+            return
+
+        if data.startswith("edit_product_category_"):
+            await choose_product_category(
+                update,
+                context,
+                int(data.split("_")[-1]),
+            )
+            return
+
+        if data.startswith("set_product_category_"):
+            parts = data.split("_")
+            await set_product_category(
+                update,
+                context,
+                int(parts[3]),
+                int(parts[4]),
             )
             return
 
@@ -5837,6 +6479,14 @@ async def callback_router(
             )
             return
 
+        if data == "admin_stats":
+            await admin_stats(update, context)
+            return
+
+        if data == "admin_categories":
+            await admin_categories(update, context)
+            return
+
         if data == "admin_users":
             await admin_users(
                 update,
@@ -6020,6 +6670,9 @@ async def text_handler(
     update,
     context,
 ):
+    if await process_smart_search(update, context):
+        return
+
     if await process_create_store(
         update,
         context,
