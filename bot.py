@@ -24,7 +24,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.43.0"
+VERSION = "0.44.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -221,6 +221,146 @@ def add_balance(user_id, amount):
     )
 
     return True
+
+
+# ============================================================
+# VEXMART 0.44
+# ============================================================
+
+XP_DAILY_BONUS = 10
+XP_PURCHASE = 50
+XP_SALE = 50
+XP_REVIEW = 15
+XP_STORE_CREATE = 100
+XP_TASK = 20
+XP_PER_LEVEL = 100
+
+def get_user_xp(user_id):
+    user = get_user(user_id)
+    return int(user.get("xp", 0) or 0) if user else 0
+
+def get_user_level(user_id):
+    return (get_user_xp(user_id) // XP_PER_LEVEL) + 1
+
+def get_level_progress(user_id):
+    xp = get_user_xp(user_id)
+    return {"level": get_user_level(user_id), "xp": xp, "current": xp % XP_PER_LEVEL, "needed": XP_PER_LEVEL}
+
+async def add_xp(bot, user_id, amount, reason=None):
+    if amount <= 0: return False
+    user = get_user(user_id)
+    if not user: return False
+    old_xp = int(user.get("xp", 0) or 0)
+    old_level = (old_xp // XP_PER_LEVEL) + 1
+    new_xp = old_xp + amount
+    new_level = (new_xp // XP_PER_LEVEL) + 1
+    db_update("users", {"xp": new_xp}, {"id": user_id})
+    if new_level > old_level:
+        await notify_user(bot, user_id, f"🆙 Новый уровень!\n\n⭐ Уровень: {new_level}\n✨ XP: {new_xp}")
+    return True
+
+def increment_user_counter(user_id, field, amount=1):
+    user = get_user(user_id)
+    if not user: return False
+    value = int(user.get(field, 0) or 0) + amount
+    db_update("users", {field: value}, {"id": user_id})
+    return True
+
+def get_store_status(store):
+    return (store.get("status", "open") or "open") if store else "open"
+
+def store_is_open(store):
+    return get_store_status(store) == "open"
+
+def store_status_text(store):
+    return "🟢 Открыт" if store_is_open(store) else "🔴 Закрыт"
+
+def get_leaderboard(field, limit=10):
+    users = db_select("users")
+    users.sort(key=lambda u: int(u.get(field, 0) or 0), reverse=True)
+    return users[:limit]
+
+def leaderboard_name(user):
+    return str(user.get("first_name") or user.get("username") or user.get("id"))[:30]
+
+async def show_leaderboard(update, context, category="xp"):
+    query = update.callback_query
+    configs = {
+        "xp": ("⭐ Лидерборд по XP", "xp", "XP"),
+        "purchases": ("🛒 Лидерборд по покупкам", "purchase_count", "покупок"),
+        "sales": ("💰 Лидерборд по продажам", "sales_count", "продаж"),
+    }
+    title, field, unit = configs.get(category, configs["xp"])
+    users = get_leaderboard(field)
+    text = f"{title}\n\n"
+    if not users: text += "Пока никого нет."
+    else:
+        for i, user in enumerate(users, 1):
+            place = {1:"🥇",2:"🥈",3:"🥉"}.get(i, f"{i}.")
+            text += f"{place} {leaderboard_name(user)} — {int(user.get(field,0) or 0)} {unit}\n"
+    keyboard = [[InlineKeyboardButton("⭐ XP", callback_data="leaderboard_xp"), InlineKeyboardButton("🛒 Покупки", callback_data="leaderboard_purchases")], [InlineKeyboardButton("💰 Продажи", callback_data="leaderboard_sales")], [InlineKeyboardButton("⬅️ Назад", callback_data="profile")]]
+    await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(keyboard))
+    await safe_query_answer(query)
+
+async def open_store(update, context, store_id):
+    query = update.callback_query
+    store = get_owned_store(query.from_user.id)
+    if not store or store.get("id") != store_id:
+        await safe_query_answer(query, "Только владелец может открыть магазин.", show_alert=True); return
+    if store_is_open(store):
+        await safe_query_answer(query, "Магазин уже открыт."); return
+    db_update("stores", {"status":"open"}, {"id":store_id})
+    queued = db_select("orders", filters_dict={"store_id":store_id,"status":"queued"})
+    if queued:
+        db_update("orders", {"status":"pending"}, {"store_id":store_id,"status":"queued"})
+        members = get_store_member_ids(store_id)
+        for order in queued:
+            buyer_id = order.get("buyer_id") or order.get("user_id")
+            await notify_user(context.bot, buyer_id, f"🟢 Магазин снова открыт!\n\n📦 Заказ #{order.get('id')} снова передан продавцам.")
+            for member_id in members:
+                await notify_user(context.bot, member_id, f"🛒 Появился отложенный заказ!\n\n📦 Заказ #{order.get('id')}\nТовар: {order.get('product_name') or 'Товар'}")
+    await safe_query_answer(query, f"🟢 Магазин открыт! Заказов выпущено: {len(queued)}", show_alert=True)
+    await my_store(update, context)
+
+async def close_store(update, context, store_id):
+    query = update.callback_query
+    store = get_owned_store(query.from_user.id)
+    if not store or store.get("id") != store_id:
+        await safe_query_answer(query, "Только владелец может закрыть магазин.", show_alert=True); return
+    if not store_is_open(store):
+        await safe_query_answer(query, "Магазин уже закрыт."); return
+    db_update("stores", {"status":"closed"}, {"id":store_id})
+    await safe_query_answer(query, "🔴 Магазин закрыт. Новые заказы будут ждать открытия.", show_alert=True)
+    await my_store(update, context)
+
+def task_condition(user_id, task):
+    name = str(task.get("task", "")).lower()
+    if "посетить vexmart" in name:
+        return bool(db_select("bot_visits", filters_dict={"user_id":user_id}, limit=1))
+    if "открыть магазин" in name:
+        return bool(db_select("stores", filters_dict={"owner_id":user_id}, limit=1))
+    if "совершить покупку" in name:
+        return bool(db_select("orders", filters_dict={"buyer_id":user_id,"status":"completed"}, limit=1))
+    if "оставить отзыв" in name:
+        return bool(db_select("product_reviews", filters_dict={"user_id":user_id}, limit=1))
+    return False
+
+async def claim_task(update, context, task_id):
+    query = update.callback_query; user_id = query.from_user.id
+    tasks = db_select("tasks", filters_dict={"id":task_id,"user_id":user_id}, limit=1)
+    if not tasks:
+        await safe_query_answer(query,"Задание не найдено.",show_alert=True); return
+    task = tasks[0]
+    if task.get("completed"):
+        await safe_query_answer(query,"Задание уже выполнено.",show_alert=True); return
+    if not task_condition(user_id, task):
+        await safe_query_answer(query,"❌ Условие задания ещё не выполнено.",show_alert=True); return
+    db_update("tasks", {"completed":True}, {"id":task_id})
+    reward = int(task.get("reward",0) or 0)
+    if reward: add_balance(user_id,reward)
+    await add_xp(context.bot,user_id,XP_TASK,"task")
+    await safe_query_answer(query,f"🎉 Задание выполнено! +{reward} ₽",show_alert=True)
+    await show_tasks(update,context)
 
 
 # ============================================================
@@ -882,6 +1022,13 @@ async def claim_daily_bonus(
         reward,
     )
 
+    await add_xp(
+        context.bot,
+        user_id,
+        XP_DAILY_BONUS,
+        "daily_bonus",
+    )
+
     bonus = get_daily_bonus(user_id)
 
     streak = (
@@ -1028,6 +1175,10 @@ async def show_profile(
         f"ID: {user_id}\n"
         f"Роль: {role_text}\n"
         f"💰 Баланс: {balance} ₽\n\n"
+        f"⭐ Уровень: {get_user_level(user_id)}\n"
+        f"✨ XP: {user.get('xp', 0) or 0}\n"
+        f"🛒 Покупок: {user.get('purchase_count', 0) or 0}\n"
+        f"💰 Продаж: {user.get('sales_count', 0) or 0}\n\n"
         f"🔥 Серия бонуса: {streak} дн.\n"
         f"🏆 Достижений: {len(earned)}"
     )
@@ -1043,6 +1194,10 @@ async def show_profile(
             InlineKeyboardButton(
                 "🏆 Достижения",
                 callback_data="achievements",
+            ),
+            InlineKeyboardButton(
+                "📊 Лидерборды",
+                callback_data="leaderboard_xp",
             )
         ],
         [
@@ -1130,6 +1285,7 @@ async def show_stores(
             [
                 InlineKeyboardButton(
                     f"🏪 {store.get('name', 'Магазин')}"
+                    f" {store_status_text(store)}"
                     f"{rating_text}",
                     callback_data=(
                         f"store_{store['id']}"
@@ -1233,6 +1389,7 @@ async def show_store(
         f"🏪 {store.get('name', 'Магазин')}\n\n"
         f"{store.get('description') or 'Описание отсутствует.'}\n\n"
         f"{rating_text}\n"
+        f"Статус: {store_status_text(store)}\n"
         f"👥 Продавцов: {seller_count}\n"
         f"👤 {', '.join(seller_names) or '—'}"
     )
@@ -2703,6 +2860,13 @@ async def set_product_rating(
             },
         )
 
+        await add_xp(
+            context.bot,
+            user_id,
+            XP_REVIEW,
+            "review",
+        )
+
         message = "⭐ Товар оценён!"
 
     await award_achievement(
@@ -2825,6 +2989,13 @@ async def process_review(
                 "rating": 5,
                 "review": review_text,
             },
+        )
+
+        await add_xp(
+            context.bot,
+            user_id,
+            XP_REVIEW,
+            "review",
         )
 
     await award_achievement(
@@ -3464,6 +3635,8 @@ async def buy_product(
         {"id": product_id},
     )
 
+    order_status = "pending" if store_is_open(store) else "queued"
+
     created = db_insert(
         "orders",
         {
@@ -3471,7 +3644,7 @@ async def buy_product(
             "product_id": product_id,
             "quantity": 1,
             "total_price": price,
-            "status": "pending",
+            "status": order_status,
             "store_id": store_id,
             "buyer_id": user_id,
             "seller_id": seller_id,
@@ -3531,7 +3704,7 @@ async def buy_product(
         ),
     )
 
-    if store and seller_id:
+    if store and seller_id and order_status == "pending":
         await notify_user(
             context.bot,
             seller_id,
@@ -3542,6 +3715,12 @@ async def buy_product(
                 f"👤 Покупатель: "
                 f"{query.from_user.first_name or 'Покупатель'}"
             ),
+        )
+    elif store and order_status == "queued":
+        await safe_query_answer(
+            query,
+            "⏳ Магазин закрыт. Заказ сохранён и будет передан продавцам после открытия.",
+            show_alert=True,
         )
 
 
@@ -3584,6 +3763,7 @@ async def buyer_orders(
 
     status_text = {
         "pending": "⏳ Ожидает",
+        "queued": "⏸ В очереди — магазин закрыт",
         "accepted": "✅ Принят",
         "completed": "🎉 Выполнен",
         "cancelled": "❌ Отменён",
@@ -3794,6 +3974,16 @@ async def seller_order_details(
     )
 
     buttons = []
+
+    if status == "queued":
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "⏸ Магазин закрыт — ожидание открытия",
+                    callback_data="noop",
+                )
+            ]
+        )
 
     if status == "pending":
         buttons.append(
@@ -4075,6 +4265,18 @@ async def complete_order(
         or order.get("user_id")
     )
 
+    increment_user_counter(buyer_id, "purchase_count", 1)
+    await add_xp(context.bot, buyer_id, XP_PURCHASE, "purchase")
+
+    seller_id = order.get("seller_id") or user_id
+    increment_user_counter(seller_id, "sales_count", 1)
+    await add_xp(context.bot, seller_id, XP_SALE, "sale")
+
+    buyer_id = (
+        order.get("buyer_id")
+        or order.get("user_id")
+    )
+
     await notify_user(
         context.bot,
         buyer_id,
@@ -4149,7 +4351,8 @@ async def my_store(
         f"🏪 {store.get('name')}\n\n"
         f"{store.get('description') or 'Описание отсутствует.'}\n\n"
         f"👥 Продавцов: {len(members)}\n"
-        f"{rating_text}"
+        f"{rating_text}\n"
+        f"Статус: {store_status_text(store)}"
     )
 
     if store.get("address"):
@@ -4189,6 +4392,21 @@ async def my_store(
     ]
 
     if owner:
+        if store_is_open(store):
+            buttons.append([
+                InlineKeyboardButton(
+                    "🔴 Закрыть магазин",
+                    callback_data=f"close_store_{store_id}",
+                )
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(
+                    "🟢 Открыть магазин",
+                    callback_data=f"open_store_{store_id}",
+                )
+            ])
+
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -4328,21 +4546,19 @@ async def show_tasks(
     context,
 ):
     query = update.callback_query
-
     user_id = query.from_user.id
 
     tasks = db_select(
         "tasks",
-        filters_dict={
-            "user_id": user_id,
-        },
+        filters_dict={"user_id": user_id},
     )
 
     if not tasks:
         default_tasks = [
-            ("Открыть магазин", 10),
-            ("Посмотреть товар", 5),
             ("Посетить VexMart", 15),
+            ("Совершить покупку", 50),
+            ("Оставить отзыв", 30),
+            ("Открыть магазин", 100),
         ]
 
         for task_name, reward in default_tasks:
@@ -4358,44 +4574,124 @@ async def show_tasks(
 
         tasks = db_select(
             "tasks",
-            filters_dict={
-                "user_id": user_id,
-            },
+            filters_dict={"user_id": user_id},
         )
+
+    # Миграция старого задания 0.43, которое нельзя было проверить
+    # по данным сервера. Теперь оно становится проверяемым.
+    for task in tasks:
+        if str(task.get("task", "")).strip().lower() == "посмотреть товар":
+            db_update(
+                "tasks",
+                {"task": "Совершить покупку"},
+                {"id": task.get("id")},
+            )
+            task["task"] = "Совершить покупку"
 
     text = "📋 Задания:\n\n"
+    buttons = []
 
     for task in tasks:
-        mark = (
-            "✅"
-            if task.get("completed")
-            else "⬜"
-        )
-
+        completed = bool(task.get("completed"))
+        mark = "✅" if completed else "⬜"
         text += (
             f"{mark} {task.get('task')}\n"
-            f"💰 Награда: "
-            f"{task.get('reward', 0)} ₽\n\n"
+            f"💰 Награда: {task.get('reward', 0)} ₽\n\n"
         )
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[
+        if not completed:
+            buttons.append([
                 InlineKeyboardButton(
-                    "⬅️ Назад",
-                    callback_data="back_menu",
+                    f"🎁 Получить награду #{task.get('id')}",
+                    callback_data=f"claim_task_{task.get('id')}",
                 )
-            ]]
-        ),
-    )
+            ])
 
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Назад",
+            callback_data="back_menu",
+        )
+    ])
+
+    await query.edit_message_text(
+        text[:4000],
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
     await safe_query_answer(query)
 
 
-# ============================================================
-# ROLES
-# ============================================================
+async def create_store_start(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    existing = get_owned_store(user_id)
+
+    if existing:
+        set_role(user_id, "seller")
+        await query.edit_message_text(
+            "🏪 У тебя уже есть магазин.",
+            reply_markup=seller_menu(user_id),
+        )
+        await safe_query_answer(query)
+        return
+
+    context.user_data["creating_store"] = True
+    await query.edit_message_text(
+        "🏪 Создание магазина\n\n"
+        "Напиши название магазина:"
+    )
+    await safe_query_answer(query)
+
+
+async def process_create_store(update, context):
+    if not context.user_data.get("creating_store"):
+        return False
+
+    context.user_data.pop("creating_store", None)
+    user_id = update.effective_user.id
+    name = update.message.text.strip()
+
+    if not name:
+        await update.message.reply_text(
+            "❌ Название не может быть пустым."
+        )
+        return True
+
+    created = db_insert(
+        "stores",
+        {
+            "owner_id": user_id,
+            "name": name[:100],
+            "description": "",
+            "status": "open",
+        },
+    )
+
+    if not created:
+        await update.message.reply_text(
+            "❌ Не удалось создать магазин."
+        )
+        return True
+
+    set_role(user_id, "seller")
+    await add_xp(
+        context.bot,
+        user_id,
+        XP_STORE_CREATE,
+        "store_create",
+    )
+    await award_achievement(
+        context.bot,
+        user_id,
+        "first_store",
+    )
+
+    await update.message.reply_text(
+        "🎉 Магазин создан!",
+        reply_markup=seller_menu(user_id),
+    )
+    return True
+
 
 async def become_seller(
     update,
@@ -5070,6 +5366,46 @@ async def callback_router(
             )
             return
 
+        if data == "create_store":
+            await create_store_start(update, context)
+            return
+
+        if data.startswith("leaderboard_"):
+            await show_leaderboard(
+                update,
+                context,
+                data[len("leaderboard_"):],
+            )
+            return
+
+        if data.startswith("claim_task_"):
+            await claim_task(
+                update,
+                context,
+                int(data.split("_")[-1]),
+            )
+            return
+
+        if data.startswith("open_store_"):
+            await open_store(
+                update,
+                context,
+                int(data.split("_")[-1]),
+            )
+            return
+
+        if data.startswith("close_store_"):
+            await close_store(
+                update,
+                context,
+                int(data.split("_")[-1]),
+            )
+            return
+
+        if data == "noop":
+            await safe_query_answer(query)
+            return
+
         # ----------------------------
         # STORE EDIT / DELETE
         # ----------------------------
@@ -5681,6 +6017,12 @@ async def text_handler(
     update,
     context,
 ):
+    if await process_create_store(
+        update,
+        context,
+    ):
+        return
+
     if await process_seller_username(
         update,
         context,
