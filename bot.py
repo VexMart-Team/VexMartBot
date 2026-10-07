@@ -599,7 +599,7 @@ def buyer_menu(user_id=None):
         ],
     ]
 
-    if user_id == ADMIN_ID:
+    if user_id in ADMIN_IDS:
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -654,7 +654,7 @@ def seller_menu(user_id):
         ],
     ]
 
-    if user_id == ADMIN_ID:
+    if user_id in ADMIN_IDS:
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -5031,7 +5031,7 @@ async def receive_location(
 # ============================================================
 
 def is_admin(user_id):
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
 
 
 async def admin_panel(
