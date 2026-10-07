@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
@@ -25,7 +26,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.45.0"
+VERSION = "0.45.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -6731,6 +6732,48 @@ async def location_handler(
 
 
 # ============================================================
+# AUTO-REFRESH / TELEGRAM KEEP-ALIVE
+# ============================================================
+
+async def telegram_keep_alive(application):
+    """
+    Периодически обращаемся к Telegram API, чтобы поддерживать
+    активную сессию бота и не допускать ситуации, когда после
+    длительного простоя inline-кнопки начинают вести себя так,
+    будто бот больше не отвечает.
+
+    Интервал специально меньше 30 минут.
+    """
+    while True:
+        try:
+            await application.bot.get_me()
+            print("[KEEP-ALIVE] Telegram connection refreshed")
+        except Exception as e:
+            print(f"[KEEP-ALIVE ERROR] {e}")
+
+        await asyncio.sleep(5 * 60)
+
+
+async def start_keep_alive(application):
+    task = asyncio.create_task(
+        telegram_keep_alive(application)
+    )
+    application.bot_data["keep_alive_task"] = task
+
+
+async def stop_keep_alive(application):
+    task = application.bot_data.get("keep_alive_task")
+
+    if task:
+        task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+# ============================================================
 # HEALTH SERVER FOR RENDER
 # ============================================================
 
@@ -6783,6 +6826,8 @@ async def start_web_server(
         f"on port {port}"
     )
 
+    await start_keep_alive(application)
+
 
 async def stop_web_server(
     application,
@@ -6799,6 +6844,8 @@ async def stop_web_server(
             print(
                 f"[WEB CLEANUP ERROR] {e}"
             )
+
+    await stop_keep_alive(application)
 
 
 # ============================================================
