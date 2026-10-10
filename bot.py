@@ -26,7 +26,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.45.1"
+VERSION = "0.46.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -6774,13 +6774,90 @@ async def stop_keep_alive(application):
 
 
 # ============================================================
-# HEALTH SERVER FOR RENDER
+# WEB SERVER + READ-ONLY CATALOG API
 # ============================================================
 
 async def health(request):
     return web.Response(
         text=f"VexMart {VERSION} is alive!"
     )
+
+
+@web.middleware
+async def api_cors_middleware(request, handler):
+    """Allow the read-only catalog API to be called from Expo web preview."""
+    if request.method == "OPTIONS":
+        response = web.Response(status=204)
+    else:
+        response = await handler(request)
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+async def api_stores(request):
+    """Return public store-card fields only; do not expose exact location data."""
+    stores = await asyncio.to_thread(
+        db_select,
+        "stores",
+        "id,name,description,status,created_at",
+        None,
+        100,
+        "created_at",
+        False,
+    )
+    return web.json_response({
+        "ok": True,
+        "count": len(stores),
+        "stores": stores,
+    })
+
+
+async def api_store_products(request):
+    try:
+        store_id = int(request.match_info["store_id"])
+        if store_id < 1:
+            raise ValueError
+    except (TypeError, ValueError):
+        return web.json_response(
+            {"ok": False, "error": "invalid_store_id"},
+            status=400,
+        )
+
+    stores = await asyncio.to_thread(
+        db_select,
+        "stores",
+        "id,name,status",
+        {"id": store_id},
+        1,
+    )
+    if not stores:
+        return web.json_response(
+            {"ok": False, "error": "store_not_found"},
+            status=404,
+        )
+
+    products = await asyncio.to_thread(
+        db_select,
+        "products",
+        "id,name,description,price,stock,store_id,cashback,created_at,category_id",
+        {"store_id": store_id},
+        100,
+        "created_at",
+        False,
+    )
+    return web.json_response({
+        "ok": True,
+        "store": stores[0],
+        "count": len(products),
+        "products": products,
+    })
+
+
+async def api_options(request):
+    return web.Response(status=204)
 
 
 async def start_web_server(
@@ -6793,7 +6870,7 @@ async def start_web_server(
         )
     )
 
-    app = web.Application()
+    app = web.Application(middlewares=[api_cors_middleware])
 
     app.router.add_get(
         "/",
@@ -6804,6 +6881,12 @@ async def start_web_server(
         "/health",
         health,
     )
+    app.router.add_get("/api/stores", api_stores)
+    app.router.add_get(
+        "/api/stores/{store_id}/products",
+        api_store_products,
+    )
+    app.router.add_route("OPTIONS", "/{tail:.*}", api_options)
 
     runner = web.AppRunner(app)
 
