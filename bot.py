@@ -1,6 +1,10 @@
 import os
 import re
 import asyncio
+import hashlib
+import hmac
+import secrets
+from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 
 from aiohttp import web
@@ -26,7 +30,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.46.0"
+VERSION = "0.47.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -1542,6 +1546,13 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user = update.effective_user
+
+    if context.args and context.args[0].startswith("auth_"):
+        handled = await confirm_telegram_auth_start(
+            update, context, context.args[0]
+        )
+        if handled:
+            return
 
     ensure_user(user)
 
@@ -6774,6 +6785,437 @@ async def stop_keep_alive(application):
 
 
 # ============================================================
+# APP AUTHENTICATION
+# ============================================================
+
+AUTH_SESSION_DAYS = 30
+AUTH_CHALLENGE_MINUTES = 5
+AUTH_RATE_WINDOW_SECONDS = 600
+AUTH_RATE_MAX_ATTEMPTS = 10
+_auth_attempts = defaultdict(deque)
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _iso_utc(value):
+    return value.isoformat()
+
+
+def _parse_datetime(value):
+    try:
+        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=timezone.utc)
+        return result
+    except (TypeError, ValueError):
+        return None
+
+
+def _sha256(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _hash_password(password, salt=None):
+    salt_bytes = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt_bytes,
+        n=16384,
+        r=8,
+        p=1,
+        dklen=64,
+    )
+    return f"scrypt$16384$8$1${salt_bytes.hex()}${digest.hex()}"
+
+
+def _verify_password(password, stored):
+    try:
+        algorithm, n, r, p_value, salt_hex, digest_hex = stored.split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        calculated = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=bytes.fromhex(salt_hex),
+            n=int(n),
+            r=int(r),
+            p=int(p_value),
+            dklen=len(bytes.fromhex(digest_hex)),
+        )
+        return hmac.compare_digest(calculated.hex(), digest_hex)
+    except (ValueError, TypeError, MemoryError):
+        return False
+
+
+def _normalise_username(username):
+    return str(username or "").strip().casefold()
+
+
+def _valid_username(username):
+    if not isinstance(username, str):
+        return False
+    username = username.strip()
+    return (
+        3 <= len(username) <= 24
+        and all(ch.isalnum() or ch in "_.-" for ch in username)
+    )
+
+
+def _auth_rate_limited(request, action):
+    now = _utc_now().timestamp()
+    ip = request.remote or "unknown"
+    key = f"{ip}:{action}"
+    attempts = _auth_attempts[key]
+    while attempts and now - attempts[0] > AUTH_RATE_WINDOW_SECONDS:
+        attempts.popleft()
+    if len(attempts) >= AUTH_RATE_MAX_ATTEMPTS:
+        return True
+    attempts.append(now)
+    return False
+
+
+def _bearer_token(request):
+    value = request.headers.get("Authorization", "")
+    if not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    return token if 20 <= len(token) <= 256 else None
+
+
+def _get_account_for_token(token):
+    sessions = db_select(
+        "app_sessions",
+        filters_dict={"token_hash": _sha256(token)},
+        limit=1,
+    )
+    if not sessions:
+        return None
+    session = sessions[0]
+    expires = _parse_datetime(session.get("expires_at"))
+    if session.get("revoked_at") or not expires or expires <= _utc_now():
+        return None
+    accounts = db_select(
+        "app_accounts",
+        filters_dict={"id": session.get("account_id")},
+        limit=1,
+    )
+    return accounts[0] if accounts else None
+
+
+def _create_app_session(account_id):
+    token = secrets.token_urlsafe(40)
+    created = db_insert("app_sessions", {
+        "account_id": account_id,
+        "token_hash": _sha256(token),
+        "expires_at": _iso_utc(_utc_now() + timedelta(days=AUTH_SESSION_DAYS)),
+    })
+    return token if created else None
+
+
+async def _read_json_object(request):
+    try:
+        value = await request.json()
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def api_auth_register(request):
+    if _auth_rate_limited(request, "register"):
+        return web.json_response(
+            {"ok": False, "error": "too_many_attempts"},
+            status=429,
+        )
+
+    data = await _read_json_object(request)
+    if not data:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    username = str(data.get("username") or "").strip()
+    password = data.get("password")
+    if not _valid_username(username):
+        return web.json_response({
+            "ok": False,
+            "error": "invalid_username",
+            "message": "Логин должен содержать 3–24 буквы, цифры, точку, дефис или подчёркивание.",
+        }, status=400)
+    if not isinstance(password, str) or not 8 <= len(password) <= 128:
+        return web.json_response({
+            "ok": False,
+            "error": "invalid_password",
+            "message": "Пароль должен содержать от 8 до 128 символов.",
+        }, status=400)
+
+    normalized = _normalise_username(username)
+    existing = await asyncio.to_thread(
+        db_select, "app_accounts", "id", {"username_normalized": normalized}, 1
+    )
+    if existing:
+        return web.json_response({"ok": False, "error": "username_taken"}, status=409)
+
+    created = await asyncio.to_thread(
+        db_insert,
+        "app_accounts",
+        {
+            "username": username,
+            "username_normalized": normalized,
+            "password_hash": _hash_password(password),
+        },
+    )
+    if not created:
+        # A unique constraint also protects against simultaneous registrations.
+        return web.json_response({"ok": False, "error": "registration_failed"}, status=409)
+
+    account = created[0]
+    token = await asyncio.to_thread(_create_app_session, account["id"])
+    if not token:
+        return web.json_response({"ok": False, "error": "session_creation_failed"}, status=500)
+
+    return web.json_response({
+        "ok": True,
+        "token": token,
+        "expires_in": AUTH_SESSION_DAYS * 24 * 60 * 60,
+        "account": {
+            "id": account["id"],
+            "username": account["username"],
+            "telegram_linked": bool(account.get("telegram_user_id")),
+        },
+    }, status=201)
+
+
+async def api_auth_login(request):
+    if _auth_rate_limited(request, "login"):
+        return web.json_response(
+            {"ok": False, "error": "too_many_attempts"},
+            status=429,
+        )
+
+    data = await _read_json_object(request)
+    if not data:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+    username = data.get("username")
+    password = data.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        return web.json_response({"ok": False, "error": "invalid_credentials"}, status=401)
+
+    accounts = await asyncio.to_thread(
+        db_select,
+        "app_accounts",
+        "id,username,username_normalized,password_hash,telegram_user_id",
+        {"username_normalized": _normalise_username(username)},
+        1,
+    )
+    account = accounts[0] if accounts else None
+    stored_hash = account.get("password_hash") if account else None
+    if not stored_hash or not _verify_password(password, stored_hash):
+        return web.json_response({"ok": False, "error": "invalid_credentials"}, status=401)
+
+    token = await asyncio.to_thread(_create_app_session, account["id"])
+    if not token:
+        return web.json_response({"ok": False, "error": "session_creation_failed"}, status=500)
+    return web.json_response({
+        "ok": True,
+        "token": token,
+        "expires_in": AUTH_SESSION_DAYS * 24 * 60 * 60,
+        "account": {
+            "id": account["id"],
+            "username": account["username"],
+            "telegram_linked": bool(account.get("telegram_user_id")),
+        },
+    })
+
+
+async def api_auth_me(request):
+    token = _bearer_token(request)
+    account = await asyncio.to_thread(_get_account_for_token, token) if token else None
+    if not account:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return web.json_response({
+        "ok": True,
+        "account": {
+            "id": account["id"],
+            "username": account["username"],
+            "telegram_linked": bool(account.get("telegram_user_id")),
+        },
+    })
+
+
+async def api_auth_logout(request):
+    token = _bearer_token(request)
+    if not token:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    sessions = await asyncio.to_thread(
+        db_select, "app_sessions", filters_dict={"token_hash": _sha256(token)}, limit=1
+    )
+    if not sessions:
+        return web.json_response({"ok": True})
+    await asyncio.to_thread(
+        db_update,
+        "app_sessions",
+        {"revoked_at": _iso_utc(_utc_now())},
+        {"id": sessions[0]["id"]},
+    )
+    return web.json_response({"ok": True})
+
+
+async def api_auth_telegram_start(request):
+    if _auth_rate_limited(request, "telegram_start"):
+        return web.json_response({"ok": False, "error": "too_many_attempts"}, status=429)
+
+    application = request.app.get("telegram_application")
+    if not application:
+        return web.json_response({"ok": False, "error": "telegram_unavailable"}, status=503)
+    try:
+        bot_info = await application.bot.get_me()
+    except Exception as exc:
+        print(f"[AUTH TELEGRAM BOT INFO ERROR] {exc}")
+        return web.json_response({"ok": False, "error": "telegram_unavailable"}, status=503)
+
+    challenge = secrets.token_urlsafe(24)
+    expires_at = _iso_utc(_utc_now() + timedelta(minutes=AUTH_CHALLENGE_MINUTES))
+    created = await asyncio.to_thread(
+        db_insert,
+        "telegram_login_challenges",
+        {
+            "challenge_hash": _sha256(challenge),
+            "expires_at": expires_at,
+        },
+    )
+    if not created:
+        return web.json_response({"ok": False, "error": "challenge_creation_failed"}, status=500)
+
+    return web.json_response({
+        "ok": True,
+        "bot_link": f"https://t.me/{bot_info.username}?start=auth_{challenge}",
+        "expires_in": AUTH_CHALLENGE_MINUTES * 60,
+        "message": "Открой ссылку и подтверди вход в Telegram-боте, затем проверь статус.",
+    })
+
+
+async def api_auth_telegram_status(request):
+    challenge = request.query.get("challenge", "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", challenge):
+        return web.json_response({"ok": False, "error": "invalid_challenge"}, status=400)
+
+    rows = await asyncio.to_thread(
+        db_select,
+        "telegram_login_challenges",
+        filters_dict={"challenge_hash": _sha256(challenge)},
+        limit=1,
+    )
+    if not rows:
+        return web.json_response({"ok": False, "error": "challenge_not_found"}, status=404)
+    row = rows[0]
+    if row.get("consumed_at"):
+        return web.json_response({"ok": False, "error": "challenge_already_used"}, status=410)
+    expires = _parse_datetime(row.get("expires_at"))
+    if not expires or expires <= _utc_now():
+        return web.json_response({"ok": False, "error": "challenge_expired"}, status=410)
+    if not row.get("confirmed_at") or not row.get("telegram_user_id"):
+        return web.json_response({"ok": True, "confirmed": False})
+
+    telegram_id = int(row["telegram_user_id"])
+    accounts = await asyncio.to_thread(
+        db_select,
+        "app_accounts",
+        filters_dict={"telegram_user_id": telegram_id},
+        limit=1,
+    )
+    account = accounts[0] if accounts else None
+
+    if not account:
+        # Telegram-only account; keep Telegram bot's existing users table and balances intact.
+        created = await asyncio.to_thread(
+            db_insert,
+            "app_accounts",
+            {
+                "username": f"tg_{telegram_id}",
+                "username_normalized": f"tg_{telegram_id}",
+                "password_hash": None,
+                "telegram_user_id": telegram_id,
+            },
+        )
+        if not created:
+            # If two polls raced, re-read the account before returning an error.
+            accounts = await asyncio.to_thread(
+                db_select,
+                "app_accounts",
+                filters_dict={"telegram_user_id": telegram_id},
+                limit=1,
+            )
+            account = accounts[0] if accounts else None
+        else:
+            account = created[0]
+
+    if not account:
+        return web.json_response({"ok": False, "error": "telegram_account_failed"}, status=500)
+
+    token = await asyncio.to_thread(_create_app_session, account["id"])
+    if not token:
+        return web.json_response({"ok": False, "error": "session_creation_failed"}, status=500)
+
+    await asyncio.to_thread(
+        db_update,
+        "telegram_login_challenges",
+        {"consumed_at": _iso_utc(_utc_now())},
+        {"id": row["id"]},
+    )
+    return web.json_response({
+        "ok": True,
+        "confirmed": True,
+        "token": token,
+        "expires_in": AUTH_SESSION_DAYS * 24 * 60 * 60,
+        "account": {
+            "id": account["id"],
+            "username": account["username"],
+            "telegram_linked": True,
+        },
+    })
+
+
+async def confirm_telegram_auth_start(update, context, payload):
+    """Confirm a one-time app login challenge from a Telegram deep link."""
+    challenge = payload[len("auth_"):]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", challenge):
+        return False
+
+    rows = await asyncio.to_thread(
+        db_select,
+        "telegram_login_challenges",
+        filters_dict={"challenge_hash": _sha256(challenge)},
+        limit=1,
+    )
+    if not rows:
+        await update.message.reply_text("❌ Ссылка входа не найдена или уже недействительна.")
+        return True
+
+    row = rows[0]
+    expires = _parse_datetime(row.get("expires_at"))
+    if row.get("consumed_at") or not expires or expires <= _utc_now():
+        await update.message.reply_text("⌛ Ссылка входа истекла. Вернись в приложение и запроси новую.")
+        return True
+
+    # Telegram supplies the identity; never trust an ID sent by the app.
+    telegram_user = update.effective_user
+    await asyncio.to_thread(ensure_user, telegram_user)
+    await asyncio.to_thread(
+        db_update,
+        "telegram_login_challenges",
+        {
+            "telegram_user_id": telegram_user.id,
+            "confirmed_at": _iso_utc(_utc_now()),
+        },
+        {"id": row["id"]},
+    )
+    await update.message.reply_text(
+        "✅ Вход в VexMart подтверждён!\n\n"
+        "Вернись в приложение — оно завершит вход автоматически."
+    )
+    return True
+
+
+# ============================================================
 # WEB SERVER + READ-ONLY CATALOG API
 # ============================================================
 
@@ -6792,8 +7234,8 @@ async def api_cors_middleware(request, handler):
         response = await handler(request)
 
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 
 
@@ -6871,6 +7313,7 @@ async def start_web_server(
     )
 
     app = web.Application(middlewares=[api_cors_middleware])
+    app["telegram_application"] = application
 
     app.router.add_get(
         "/",
@@ -6882,6 +7325,14 @@ async def start_web_server(
         health,
     )
     app.router.add_get("/api/stores", api_stores)
+
+    # Authentication API. Secrets stay on the server; only token hashes are stored.
+    app.router.add_post("/api/auth/register", api_auth_register)
+    app.router.add_post("/api/auth/login", api_auth_login)
+    app.router.add_get("/api/auth/me", api_auth_me)
+    app.router.add_post("/api/auth/logout", api_auth_logout)
+    app.router.add_post("/api/auth/telegram/start", api_auth_telegram_start)
+    app.router.add_get("/api/auth/telegram/status", api_auth_telegram_status)
     app.router.add_get(
         "/api/stores/{store_id}/products",
         api_store_products,
