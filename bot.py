@@ -30,7 +30,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.47.0"
+VERSION = "0.47.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -38,6 +38,7 @@ ADMIN_IDS = {
     for admin_id in os.getenv("ADMIN_IDS", "").split(",")
     if admin_id.strip()
 }
+SUPERADMIN_ID = int(os.getenv("SUPERADMIN_ID", "0") or 0)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -564,83 +565,116 @@ def category_name(product):
     return category.get("name") if category else None
 
 
-def product_search_score(product, query_words, max_price=None):
-    name = str(product.get("name") or "").lower()
-    description = str(product.get("description") or "").lower()
-    category = str(category_name(product) or "").lower()
-    haystack = f"{name} {description} {category}"
+def _normalize_search_text(value):
+    """Нормализует текст для поиска: регистр, ё/е и пунктуацию."""
+    text = str(value or "").casefold().replace("ё", "е")
+    text = re.sub(r"[^\wа-я0-9]+", " ", text, flags=re.IGNORECASE)
+    return " ".join(text.split())
+
+
+def _parse_search_budget(text):
+    """Извлекает максимальную цену из запроса."""
+    patterns = (
+        r"(?:до|<=|не\s+дороже|максимум|max)\s*(\d+)",
+        r"(\d+)\s*(?:vxc\b|₽|руб(?:ль|ля|лей)?\b)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def product_search_score(product, query_words, query_text=""):
+    """Оценивает совпадение товара с текстом запроса."""
+    name = _normalize_search_text(product.get("name"))
+    description = _normalize_search_text(product.get("description"))
+    category = _normalize_search_text(category_name(product))
+    normalized_query = _normalize_search_text(query_text)
 
     score = 0
+    if normalized_query and normalized_query == name:
+        score += 100
+    elif normalized_query and normalized_query in name:
+        score += 30
+
     for word in query_words:
-        if word in name:
+        if word in name.split():
+            score += 10
+        elif word in name:
             score += 6
         elif word in category:
             score += 4
         elif word in description:
             score += 2
 
-    if max_price is not None:
-        price = int(product.get("price", 0) or 0)
-        if price <= max_price:
-            score += 3
-        else:
-            score -= 5
-
     return score
 
 
 def smart_search_products(query_text):
-    text = str(query_text or "").strip().lower()
+    raw_text = str(query_text or "").strip()
+    text = _normalize_search_text(raw_text)
+    max_price = _parse_search_budget(raw_text)
 
-    price_matches = re.findall(
-        r"(?:до|<=|не\s+дороже|максимум|max)\s*(\d+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    max_price = int(price_matches[0]) if price_matches else None
-
+    # Убираем из поисковых слов фрагмент бюджета и валюту.
     cleaned = re.sub(
         r"(?:до|<=|не\s+дороже|максимум|max)\s*\d+",
         " ",
         text,
         flags=re.IGNORECASE,
     )
+    cleaned = re.sub(
+        r"\b\d+\s*(?:vxc|руб(?:ль|ля|лей)?)\b|₽",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
 
-    cleaned = re.sub(r"[^\wа-яё]+", " ", cleaned, flags=re.IGNORECASE)
     stop_words = {
         "мне", "надо", "нужен", "нужна", "нужно", "хочу",
         "что", "то", "чтобы", "какой", "какая", "какое",
         "какие", "товар", "товары", "купить", "есть",
-        "до", "руб", "рублей", "р", "vxc",
+        "до", "руб", "рублей", "рубля", "рубль", "р", "vxc",
     }
-
     words = [
         word for word in cleaned.split()
         if len(word) >= 2 and word not in stop_words
+        and not word.isdigit()
     ]
 
     products = db_select("products")
-    products = [
-        product for product in products
-        if int(product.get("stock", 0) or 0) > 0
-    ]
+    # Учёт остатков отключён: все товары остаются доступными для поиска.
+    available_products = products
+
+    print(
+        f"[SMART SEARCH] query={raw_text!r}; "
+        f"products={len(products)}; budget={max_price}; words={words}"
+    )
 
     scored = []
-    for product in products:
-        score = product_search_score(
-            product,
-            words,
-            max_price,
-        )
+    normalized_query = " ".join(words)
+    for product in available_products:
+        try:
+            price = int(product.get("price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0
 
-        if max_price is not None and int(product.get("price", 0) or 0) > max_price:
-            if score <= 0:
-                continue
-
-        if words and score <= 0:
+        # Бюджет — настоящий фильтр, а не просто бонус к рейтингу.
+        if max_price is not None and price > max_price:
             continue
 
         if not words and max_price is None:
+            continue
+
+        score = product_search_score(
+            product,
+            words,
+            normalized_query,
+        )
+        if words and score <= 0:
             continue
 
         scored.append((score, product))
@@ -653,6 +687,7 @@ def smart_search_products(query_text):
         reverse=True,
     )
 
+    print(f"[SMART SEARCH] matches={len(scored)}")
     return [product for _, product in scored[:20]]
 
 
@@ -719,15 +754,10 @@ async def show_category_products(update, context, category_id):
         "products",
         filters_dict={"category_id": category_id},
     )
-    products = [
-        product for product in products
-        if int(product.get("stock", 0) or 0) > 0
-    ]
-
     if not products:
         await query.edit_message_text(
             f"🗂 {category.get('name')}\n\n"
-            "В этой категории пока нет товаров в наличии.",
+            "В этой категории пока нет товаров.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(
                     "⬅️ К категориям",
@@ -757,7 +787,7 @@ async def show_category_products(update, context, category_id):
 
     await query.edit_message_text(
         f"🗂 {category.get('name')}\n\n"
-        "Товары в наличии:",
+        "Товары в этой категории:",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
     await safe_query_answer(query)
@@ -3104,23 +3134,12 @@ async def show_product(
 
     buttons = []
 
-    if product.get("stock", 0) > 0:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🛒 Купить",
-                    callback_data=(
-                        f"buy_{product_id}"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "➕ В корзину",
-                    callback_data=(
-                        f"addcart_{product_id}"
-                    ),
-                ),
-            ]
-        )
+    buttons.append(
+        [
+            InlineKeyboardButton("🛒 Купить", callback_data=f"buy_{product_id}"),
+            InlineKeyboardButton("➕ В корзину", callback_data=f"addcart_{product_id}"),
+        ]
+    )
 
     buttons.append(
         [
@@ -3541,15 +3560,6 @@ async def edit_product_menu(
         ],
         [
             InlineKeyboardButton(
-                "📦 Остаток",
-                callback_data=(
-                    f"edit_product_field_"
-                    f"{product_id}_stock"
-                ),
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 "💸 Кэшбэк",
                 callback_data=(
                     f"edit_product_field_"
@@ -3577,7 +3587,6 @@ async def edit_product_menu(
         "✏️ Редактирование товара\n\n"
         f"📦 {product.get('name')}\n"
         f"💰 {product.get('price', 0)} ₽\n"
-        f"📦 Остаток: {product.get('stock', 0)}\n"
         f"💸 Кэшбэк: {product.get('cashback', 0)} ₽\n"
         f"🗂 Категория: {category_name(product) or 'нет'}\n\n"
         "Что изменить?",
@@ -3627,7 +3636,6 @@ async def edit_product_field(
         "name": "название",
         "description": "описание",
         "price": "цену",
-        "stock": "остаток",
         "cashback": "кэшбэк",
     }
 
@@ -3658,6 +3666,10 @@ async def process_product_edit(
     product_id = data["product_id"]
     field = data["field"]
 
+    if field == "stock":
+        await update.message.reply_text("ℹ️ Учёт остатков отключён.")
+        return True
+
     product = get_product(product_id)
 
     if not product:
@@ -3679,7 +3691,6 @@ async def process_product_edit(
 
     if field in (
         "price",
-        "stock",
         "cashback",
     ):
         try:
@@ -3846,13 +3857,6 @@ async def add_to_cart(
         await safe_query_answer(
             query,
             "Товар не найден.",
-        )
-        return
-
-    if product.get("stock", 0) <= 0:
-        await safe_query_answer(
-            query,
-            "Товар закончился.",
         )
         return
 
@@ -4036,18 +4040,6 @@ async def buy_product(
         )
         return
 
-    stock = product.get(
-        "stock",
-        0,
-    )
-
-    if stock <= 0:
-        await safe_query_answer(
-            query,
-            "Товар закончился.",
-        )
-        return
-
     price = product.get(
         "price",
         0,
@@ -4100,15 +4092,6 @@ async def buy_product(
         {"id": user_id},
     )
 
-    db_update(
-        "products",
-        {
-            "stock":
-                stock - 1,
-        },
-        {"id": product_id},
-    )
-
     order_status = "pending" if store_is_open(store) else "queued"
 
     created = db_insert(
@@ -4138,12 +4121,6 @@ async def buy_product(
             "users",
             {"balance": balance},
             {"id": user_id},
-        )
-
-        db_update(
-            "products",
-            {"stock": stock},
-            {"id": product_id},
         )
 
         await safe_query_answer(
@@ -4647,23 +4624,6 @@ async def cancel_order(
             buyer_id,
             order.get("total_price", 0) or 0,
         )
-
-    # Возвращаем товар на склад.
-    product_id = order.get("product_id")
-
-    if product_id:
-        product = get_product(product_id)
-
-        if product:
-            db_update(
-                "products",
-                {
-                    "stock":
-                        (product.get("stock", 0) or 0)
-                        + (order.get("quantity", 1) or 1)
-                },
-                {"id": product_id},
-            )
 
     await notify_user(
         context.bot,
@@ -5500,8 +5460,95 @@ async def receive_location(
 # ADMIN
 # ============================================================
 
+def is_superadmin(user_id):
+    return bool(SUPERADMIN_ID) and user_id == SUPERADMIN_ID
+
+
 def is_admin(user_id):
-    return user_id in ADMIN_IDS
+    return user_id in ADMIN_IDS or is_superadmin(user_id)
+
+
+async def salary_command(update, context):
+    """Выдача зарплаты в VXC доступна только SUPERADMIN_ID."""
+    message = update.effective_message
+    actor = update.effective_user
+
+    if not actor or not is_superadmin(actor.id):
+        await message.reply_text("⛔ Выдавать зарплату может только главный администратор.")
+        return
+
+    if len(context.args) != 2:
+        await message.reply_text(
+            "Использование:\n"
+            "/salary @username сумма\n"
+            "или /salary Telegram_ID сумма\n\n"
+            "Например: /salary @friend 50"
+        )
+        return
+
+    target_text = context.args[0].strip()
+    try:
+        amount = int(context.args[1])
+    except (TypeError, ValueError):
+        await message.reply_text("❌ Сумма должна быть целым числом VXC.")
+        return
+
+    if amount <= 0:
+        await message.reply_text("❌ Сумма зарплаты должна быть больше нуля.")
+        return
+    if amount > 1_000_000:
+        await message.reply_text("❌ За одну выдачу можно начислить не больше 1 000 000 VXC.")
+        return
+
+    users = db_select("users")
+    target = None
+
+    if target_text.startswith("@"):
+        username = target_text[1:].casefold()
+        target = next(
+            (user for user in users
+             if str(user.get("username") or "").casefold() == username),
+            None,
+        )
+    else:
+        try:
+            target_id = int(target_text)
+        except ValueError:
+            await message.reply_text(
+                "❌ Укажи Telegram ID числом или username с символом @."
+            )
+            return
+        target = next(
+            (user for user in users if user.get("id") == target_id),
+            None,
+        )
+
+    if not target:
+        await message.reply_text(
+            "❌ Пользователь не найден в VexMart. Пусть он сначала запустит бота командой /start."
+        )
+        return
+
+    if target.get("id") == actor.id:
+        await message.reply_text("ℹ️ Зарплату можно выдавать другим пользователям, не самому себе.")
+        return
+
+    if not add_balance(target["id"], amount):
+        await message.reply_text("⚠️ Не получилось начислить зарплату. Попробуй позже.")
+        return
+
+    new_balance = int(target.get("balance", 0) or 0) + amount
+    target_name = (
+        f"@{target.get('username')}"
+        if target.get("username")
+        else str(target.get("first_name") or target.get("id"))
+    )
+    await message.reply_text(
+        "✅ Зарплата начислена!\n\n"
+        f"👤 Получатель: {target_name}\n"
+        f"💵 Начислено: +{amount} VXC\n"
+        f"💰 Новый баланс: {new_balance} VXC"
+    )
 
 
 async def admin_panel(
@@ -5526,10 +5573,6 @@ async def admin_panel(
     open_stores = sum(
         1 for store in stores
         if store_is_open(store)
-    )
-    stock_total = sum(
-        int(product.get("stock", 0) or 0)
-        for product in products
     )
     balance_total = sum(
         int(user.get("balance", 0) or 0)
@@ -5594,7 +5637,6 @@ async def admin_panel(
         f"🏪 Магазинов: {len(stores)} "
         f"(🟢 {open_stores})\n"
         f"📦 Товаров: {len(products)}\n"
-        f"📦 Единиц на складе: {stock_total}\n"
         f"🗂 Категорий: {len(categories)}\n"
         f"🛒 Заказов: {len(orders)}\n"
         f"💰 Баланс пользователей: {balance_total} ₽\n\n"
@@ -5636,17 +5678,12 @@ async def admin_stats(update, context):
         for order in orders
         if order.get("status") == "completed"
     )
-    total_stock = sum(
-        int(product.get("stock", 0) or 0)
-        for product in products
-    )
 
     text = (
         "📊 Техническая статистика VexMart\n\n"
         f"👥 Пользователей: {len(users)}\n"
         f"🏪 Магазинов: {len(stores)}\n"
         f"📦 Товаров: {len(products)}\n"
-        f"📦 Остаток единиц: {total_stock}\n"
         f"🛒 Заказов: {len(orders)}\n"
         f"✅ Завершённых: {completed}\n"
         f"⏳ Ожидающих: {pending}\n"
@@ -5834,7 +5871,6 @@ async def admin_products(
             f"#{product.get('id')} "
             f"{product_title(product)}\n"
             f"💰 {product.get('price', 0)} ₽\n"
-            f"📦 {product.get('stock', 0)}\n"
             f"🏪 {product.get('store_id') or '—'}\n\n"
         )
 
@@ -7284,7 +7320,7 @@ async def api_store_products(request):
     products = await asyncio.to_thread(
         db_select,
         "products",
-        "id,name,description,price,stock,store_id,cashback,created_at,category_id",
+        "id,name,description,price,store_id,cashback,created_at,category_id",
         {"store_id": store_id},
         100,
         "created_at",
@@ -7417,6 +7453,13 @@ def main():
         CommandHandler(
             "start",
             start,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "salary",
+            salary_command,
         )
     )
 
