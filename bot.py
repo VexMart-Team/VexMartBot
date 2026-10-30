@@ -1083,7 +1083,7 @@ def buyer_menu(user_id=None):
         ],
     ]
 
-    if user_id in ADMIN_IDS:
+    if is_admin(user_id):
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -1138,7 +1138,7 @@ def seller_menu(user_id):
         ],
     ]
 
-    if user_id in ADMIN_IDS:
+    if is_admin(user_id):
         buttons.append(
             [
                 InlineKeyboardButton(
