@@ -6,6 +6,7 @@ import hmac
 import secrets
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 from supabase import create_client, Client
@@ -30,7 +31,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.47.1"
+VERSION = "0.48.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -286,7 +287,8 @@ def store_status_text(store):
     return "🟢 Открыт" if store_is_open(store) else "🔴 Закрыт"
 
 def get_leaderboard(field, limit=10):
-    users = db_select("users")
+    # Администраторы не участвуют в публичном лидерборде.
+    users = [u for u in db_select("users") if not is_admin(int(u.get("id", 0) or 0))]
     users.sort(key=lambda u: int(u.get(field, 0) or 0), reverse=True)
     return users[:limit]
 
@@ -5551,6 +5553,200 @@ async def salary_command(update, context):
     )
 
 
+async def salary_menu(update, context):
+    query = update.callback_query
+    if not is_superadmin(query.from_user.id):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
+        return
+    admins = sorted((uid for uid in ADMIN_IDS if uid != SUPERADMIN_ID))
+    users = {int(u.get("id")): u for u in db_select("users") if u.get("id") is not None}
+    rows = []
+    for uid in admins:
+        user = users.get(uid, {})
+        name = user.get("first_name") or user.get("username") or str(uid)
+        rows.append([InlineKeyboardButton(f"👤 {str(name)[:28]} · {uid}", callback_data=f"salary_user_{uid}")])
+    rows.append([InlineKeyboardButton("📜 История выплат", callback_data="salary_history")])
+    rows.append([InlineKeyboardButton("🗓 Мои планы выплат", callback_data="salary_plans")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="admin")])
+    await query.edit_message_text("💰 Зарплата\n\nВыбери обычного администратора:", reply_markup=InlineKeyboardMarkup(rows))
+    await safe_query_answer(query)
+
+
+async def salary_history(update, context):
+    q = update.callback_query
+    if not is_superadmin(q.from_user.id):
+        await safe_query_answer(q, "Нет доступа.", show_alert=True); return
+    rows = db_select("salary_payments", order_by="paid_at", limit=20)
+    lines = ["📜 Последние выплаты зарплаты:\n"]
+    for r in rows:
+        lines.append(f"• {r.get('amount')} VXC → {r.get('recipient_id')} · {str(r.get('paid_at') or '')[:16]}")
+    if not rows: lines.append("Выплат пока нет.")
+    await q.edit_message_text("\n".join(lines)[:3900], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К зарплате", callback_data="salary_menu")]]))
+    await safe_query_answer(q)
+
+
+async def salary_plans(update, context):
+    q = update.callback_query
+    if not is_superadmin(q.from_user.id):
+        await safe_query_answer(q, "Нет доступа.", show_alert=True); return
+    plans = db_select("salary_plans", order_by="created_at", limit=30)
+    lines = ["🗓 Планы выплат:\n"]
+    buttons = []
+    for plan in plans:
+        state = "🟢" if plan.get("active") else "⏸"
+        lines.append(f"{state} #{plan.get('id')} · {plan.get('recipient_id')} · {plan.get('amount')} VXC · {plan.get('period')}")
+        buttons.append([InlineKeyboardButton(f"{state} План #{plan.get('id')} — вкл/выкл", callback_data=f"salary_toggle_{plan.get('id')}"), InlineKeyboardButton("Изменить сумму", callback_data=f"salary_edit_{plan.get('id')}")])
+        buttons.append([InlineKeyboardButton(f"❌ Отменить план #{plan.get('id')}", callback_data=f"salary_cancel_{plan.get('id')}")])
+    if not plans: lines.append("Планов пока нет.")
+    buttons.append([InlineKeyboardButton("⬅️ К зарплате", callback_data="salary_menu")])
+    await q.edit_message_text("\n".join(lines)[:3900], reply_markup=InlineKeyboardMarkup(buttons))
+    await safe_query_answer(q)
+
+
+async def salary_toggle(update, context, plan_id):
+    q = update.callback_query
+    if not is_superadmin(q.from_user.id):
+        await safe_query_answer(q, "Нет доступа.", show_alert=True); return
+    plans = db_select("salary_plans", filters_dict={"id": plan_id}, limit=1)
+    if not plans:
+        await safe_query_answer(q, "План не найден.", show_alert=True); return
+    db_update("salary_plans", {"active": not bool(plans[0].get("active"))}, {"id": plan_id})
+    await salary_plans(update, context)
+
+
+async def salary_begin_amount(update, context, recipient_id):
+    q = update.callback_query
+    if not is_superadmin(q.from_user.id) or recipient_id not in ADMIN_IDS or recipient_id == SUPERADMIN_ID:
+        await safe_query_answer(q, "Получатель не является обычным администратором.", show_alert=True); return
+    context.user_data["salary_draft"] = {"recipient_id": recipient_id}
+    await q.edit_message_text("Введи сумму зарплаты в VXC (целое число от 1 до 1 000 000):", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="salary_menu")]]))
+    await safe_query_answer(q)
+
+
+async def process_salary_text(update, context):
+    draft = context.user_data.get("salary_draft")
+    if not draft:
+        return False
+    if not is_superadmin(update.effective_user.id):
+        context.user_data.pop("salary_draft", None); return True
+    raw = (update.message.text or "").strip()
+    stage = draft.get("stage", "amount")
+    if stage == "amount":
+        try: amount = int(raw)
+        except ValueError:
+            await update.message.reply_text("Введи целое число VXC."); return True
+        if not 1 <= amount <= 1_000_000:
+            await update.message.reply_text("Сумма должна быть от 1 до 1 000 000 VXC."); return True
+        draft["amount"] = amount
+        draft["stage"] = "mode"
+        await update.message.reply_text("Как начислять зарплату?", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Один раз", callback_data="salary_once"), InlineKeyboardButton("По расписанию", callback_data="salary_repeat")],[InlineKeyboardButton("Отмена", callback_data="salary_menu")]]))
+        return True
+    if stage == "schedule":
+        period = draft["period"]
+        parts = [x.strip() for x in raw.splitlines() if x.strip()]
+        try:
+            if len(parts) != draft["count"]: raise ValueError
+            schedule=[]
+            if period == "daily":
+                for item in parts:
+                    hh, mm = map(int, item.split(":"))
+                    if not (0 <= hh <= 23 and 0 <= mm <= 59): raise ValueError
+                    schedule.append({"hour":hh,"minute":mm})
+            elif period == "weekly":
+                days={"пн":1,"понедельник":1,"вт":2,"вторник":2,"ср":3,"среда":3,"чт":4,"четверг":4,"пт":5,"пятница":5,"сб":6,"суббота":6,"вс":7,"воскресенье":7}
+                for item in parts:
+                    day, clock = item.split()
+                    weekday = days.get(day.casefold())
+                    if weekday is None and day.isdigit() and 1 <= int(day) <= 7: weekday=int(day)
+                    hh,mm=map(int,clock.split(":"))
+                    if weekday is None or not (0<=hh<=23 and 0<=mm<=59): raise ValueError
+                    schedule.append({"weekday":weekday,"hour":hh,"minute":mm})
+            else:
+                for item in parts:
+                    day=int(item)
+                    if not 1 <= day <= 31: raise ValueError
+                    schedule.append({"day":day})
+        except Exception:
+            example = "09:00\\n18:30" if period=="daily" else ("пн 09:00\\nпт 18:00" if period=="weekly" else "1\\n15")
+            await update.message.reply_text(f"Формат не подходит. Отправь ровно {draft['count']} строк(и). Пример:\n{example}")
+            return True
+        now = datetime.now(timezone.utc)
+        first = next_salary_due(period, schedule, now)
+        record={"recipient_id":draft["recipient_id"],"created_by":update.effective_user.id,"amount":draft["amount"],"period":period,"schedule":schedule,"active":True,"next_run_at":first.isoformat()}
+        inserted=db_insert("salary_plans",record)
+        if not inserted:
+            await update.message.reply_text("Не удалось сохранить план. Проверь, что SQL-миграция 0.48.0 выполнена в Supabase.")
+        else:
+            await update.message.reply_text(f"✅ План зарплаты создан: {draft['amount']} VXC за каждое начисление. Первое — {first.astimezone(ZoneInfo('Asia/Omsk')).strftime('%d.%m.%Y %H:%M Омск')}.")
+        context.user_data.pop("salary_draft",None)
+        return True
+    return False
+
+
+def next_salary_due(period, schedule, after):
+    from datetime import time as dtime
+    local_tz = ZoneInfo("Asia/Omsk")
+    after = after.astimezone(local_tz)
+    candidates=[]
+    if period == "daily":
+        for item in schedule:
+            candidate=after.replace(hour=item["hour"],minute=item["minute"],second=0,microsecond=0)
+            if candidate <= after: candidate += timedelta(days=1)
+            candidates.append(candidate.astimezone(timezone.utc))
+    elif period == "weekly":
+        for item in schedule:
+            delta=(item["weekday"]-after.isoweekday())%7
+            candidate=(after+timedelta(days=delta)).replace(hour=item["hour"],minute=item["minute"],second=0,microsecond=0)
+            if candidate <= after: candidate += timedelta(days=7)
+            candidates.append(candidate.astimezone(timezone.utc))
+    else:
+        for item in schedule:
+            day=item["day"]
+            year,month=after.year,after.month
+            for _ in range(24):
+                import calendar
+                last=calendar.monthrange(year,month)[1]
+                if day <= last:
+                    candidate=after.replace(year=year,month=month,day=day,hour=0,minute=0,second=0,microsecond=0)
+                    if candidate > after: candidates.append(candidate.astimezone(timezone.utc))
+                    break
+                month += 1
+                if month == 13: month=1; year += 1
+    if not candidates: raise ValueError("No future salary date")
+    return min(candidates)
+
+
+async def salary_scheduler(application):
+    while True:
+        try:
+            now=datetime.now(timezone.utc)
+            due=db_select("salary_plans", filters_dict={"active":True}, limit=200)
+            for plan in due:
+                run_at=_parse_datetime(plan.get("next_run_at"))
+                if not run_at or run_at > now: continue
+                next_run=next_salary_due(plan["period"],plan["schedule"],run_at+timedelta(seconds=1))
+                try:
+                    result=supabase.rpc("process_salary_payout",{"p_plan_id":plan["id"],"p_due_at":run_at.isoformat(),"p_next_run_at":next_run.isoformat()}).execute()
+                    if result.data:
+                        await notify_user(application.bot,int(plan["recipient_id"]),f"💰 Зарплата начислена автоматически: +{plan['amount']} VXC.")
+                        await notify_user(application.bot,SUPERADMIN_ID,f"✅ Зарплата {plan['amount']} VXC начислена администратору {plan['recipient_id']}.")
+                except Exception as e: print(f"[SALARY SCHEDULER ERROR] plan={plan.get('id')}: {e}")
+        except Exception as e: print(f"[SALARY LOOP ERROR] {e}")
+        await asyncio.sleep(30)
+
+
+async def start_salary_scheduler(application):
+    application.bot_data["salary_task"] = asyncio.create_task(salary_scheduler(application))
+
+
+async def stop_salary_scheduler(application):
+    task=application.bot_data.get("salary_task")
+    if task:
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
+
+
 async def admin_panel(
     update,
     context,
@@ -5622,6 +5818,7 @@ async def admin_panel(
                 callback_data="admin_categories",
             )
         ],
+        *([[InlineKeyboardButton("💰 Зарплата", callback_data="salary_menu")]] if is_superadmin(query.from_user.id) else []),
         [
             InlineKeyboardButton(
                 "⬅️ Назад",
@@ -5639,7 +5836,7 @@ async def admin_panel(
         f"📦 Товаров: {len(products)}\n"
         f"🗂 Категорий: {len(categories)}\n"
         f"🛒 Заказов: {len(orders)}\n"
-        f"💰 Баланс пользователей: {balance_total} ₽\n\n"
+        f"💰 Баланс пользователей: {balance_total} VXC\n\n"
         f"📋 Статусы заказов: {status_text}"
     )
 
@@ -6526,6 +6723,60 @@ async def callback_router(
                 context,
             )
             return
+        if data == "salary_menu":
+            await salary_menu(update, context); return
+        if data == "salary_history":
+            await salary_history(update, context); return
+        if data == "salary_plans":
+            await salary_plans(update, context); return
+        if data.startswith("salary_user_"):
+            await salary_begin_amount(update, context, int(data.rsplit("_",1)[1])); return
+        if data.startswith("salary_toggle_"):
+            await salary_toggle(update, context, int(data.rsplit("_",1)[1])); return
+        if data.startswith("salary_edit_"):
+            if not is_superadmin(query.from_user.id):
+                await safe_query_answer(query,"Нет доступа.",show_alert=True); return
+            plan_id=int(data.rsplit("_",1)[1])
+            if not db_select("salary_plans",filters_dict={"id":plan_id},limit=1):
+                await safe_query_answer(query,"План не найден.",show_alert=True); return
+            context.user_data["salary_edit_plan_id"]=plan_id
+            await query.edit_message_text(f"Введи новую сумму VXC для плана #{plan_id} (1–1 000 000):")
+            await safe_query_answer(query); return
+        if data.startswith("salary_cancel_"):
+            if not is_superadmin(query.from_user.id):
+                await safe_query_answer(query,"Нет доступа.",show_alert=True); return
+            plan_id=int(data.rsplit("_",1)[1])
+            db_delete("salary_plans",{"id":plan_id})
+            await salary_plans(update,context); return
+        if data in {"salary_once", "salary_repeat"}:
+            if not is_superadmin(query.from_user.id):
+                await safe_query_answer(query, "Нет доступа.", show_alert=True); return
+            draft=context.user_data.get("salary_draft")
+            if not draft:
+                await safe_query_answer(query, "Сессия истекла. Начни заново.", show_alert=True); return
+            if data == "salary_once":
+                target_id=int(draft["recipient_id"]); amount=int(draft["amount"])
+                target=get_user(target_id)
+                if not target or not add_balance(target_id,amount):
+                    await safe_query_answer(query,"Не удалось начислить зарплату.",show_alert=True); return
+                db_insert("salary_payments",{"recipient_id":target_id,"amount":amount,"created_by":query.from_user.id,"payment_type":"manual"})
+                context.user_data.pop("salary_draft",None)
+                await query.edit_message_text(f"✅ Начислено {amount} VXC администратору {target_id}. Баланс не списывался ни у кого.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К зарплате",callback_data="salary_menu")]]))
+                await notify_user(context.bot,target_id,f"💰 Тебе начислена зарплата: +{amount} VXC.")
+                await notify_user(context.bot,SUPERADMIN_ID,f"✅ Ты начислил зарплату {amount} VXC администратору {target_id}.")
+                await safe_query_answer(query); return
+            draft["stage"]="period"
+            await query.edit_message_text("Выбери период:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ежедневно",callback_data="salary_period_daily")],[InlineKeyboardButton("Еженедельно",callback_data="salary_period_weekly")],[InlineKeyboardButton("Ежемесячно",callback_data="salary_period_monthly")]]))
+            await safe_query_answer(query); return
+        if data.startswith("salary_period_"):
+            if not is_superadmin(query.from_user.id):
+                await safe_query_answer(query,"Нет доступа.",show_alert=True); return
+            draft=context.user_data.get("salary_draft")
+            if not draft:
+                await safe_query_answer(query,"Сессия истекла.",show_alert=True); return
+            period=data.rsplit("_",1)[1]; draft["period"]=period; draft["stage"]="count"
+            await query.edit_message_text("Сколько выплат в каждом периоде? Введи число от 1 до 10.")
+            await safe_query_answer(query); return
 
         if data == "admin_stats":
             await admin_stats(update, context)
@@ -6718,6 +6969,32 @@ async def text_handler(
     update,
     context,
 ):
+    edit_plan_id=context.user_data.get("salary_edit_plan_id")
+    if edit_plan_id is not None:
+        if not is_superadmin(update.effective_user.id):
+            context.user_data.pop("salary_edit_plan_id",None); return
+        try: new_amount=int((update.message.text or "").strip())
+        except ValueError: new_amount=0
+        if not 1 <= new_amount <= 1_000_000:
+            await update.message.reply_text("Введи целое число от 1 до 1 000 000 VXC."); return
+        db_update("salary_plans",{"amount":new_amount},{"id":edit_plan_id})
+        context.user_data.pop("salary_edit_plan_id",None)
+        await update.message.reply_text(f"✅ Сумма выплат в плане #{edit_plan_id} изменена на {new_amount} VXC.")
+        return
+    if await process_salary_text(update, context):
+        return
+    draft=context.user_data.get("salary_draft")
+    if draft and draft.get("stage") == "count":
+        try: count=int((update.message.text or "").strip())
+        except ValueError: count=0
+        if not 1 <= count <= 10:
+            await update.message.reply_text("Введи число от 1 до 10."); return
+        draft["count"]=count; draft["stage"]="schedule"
+        period=draft["period"]
+        example="09:00\n18:30" if period=="daily" else ("пн 09:00\nпт 18:00" if period=="weekly" else "1\n15")
+        description="Время HH:MM, каждая выплата отдельной строкой." if period=="daily" else ("День недели и время (пн/вт/ср/чт/пт/сб/вс HH:MM)." if period=="weekly" else "Только число месяца 1–31, без времени. Несуществующий день месяца пропускается.")
+        await update.message.reply_text(f"Теперь отправь {count} строк(и). {description}\nПример:\n{example}")
+        return
     if await process_smart_search(update, context):
         return
 
@@ -7397,6 +7674,7 @@ async def start_web_server(
     )
 
     await start_keep_alive(application)
+    await start_salary_scheduler(application)
 
 
 async def stop_web_server(
@@ -7416,6 +7694,7 @@ async def stop_web_server(
             )
 
     await stop_keep_alive(application)
+    await stop_salary_scheduler(application)
 
 
 # ============================================================
