@@ -6193,6 +6193,7 @@ async def callback_router(
 ):
     query = update.callback_query
     data = query.data or ""
+    print(f"[CALLBACK RECEIVED] user={query.from_user.id}, data={data}", flush=True)
 
     try:
 
