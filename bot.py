@@ -31,7 +31,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.48.0"
+VERSION = "0.48.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -7032,6 +7032,42 @@ async def text_handler(
     if context.user_data.get(
         "awaiting_location"
     ):
+        return
+
+    # ========================================================
+    # EASTER EGGS — exact message match, case-insensitive
+    # Images are stored in the project's assets/ directory.
+    # ========================================================
+    easter_eggs = {
+        "человек": "easter_person.jpg",
+        "песня": "easter_song.jpg",
+        "авиасейлс": "easter_aviasales.png",
+    }
+
+    easter_egg_file = easter_eggs.get(
+        (update.message.text or "").strip().casefold()
+    )
+
+    if easter_egg_file:
+        image_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "assets",
+            easter_egg_file,
+        )
+
+        try:
+            with open(image_path, "rb") as image:
+                await update.message.reply_photo(photo=image)
+        except FileNotFoundError:
+            print(f"[EASTER EGG ERROR] Image not found: {image_path}")
+            await update.message.reply_text(
+                "🥚 Эта пасхалка временно недоступна."
+            )
+        except Exception as e:
+            print(f"[EASTER EGG ERROR] {e}")
+            await update.message.reply_text(
+                "Не получилось отправить пасхалку. Попробуй ещё раз."
+            )
         return
 
     await update.message.reply_text(
