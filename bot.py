@@ -7036,12 +7036,12 @@ async def text_handler(
 
     # ========================================================
     # EASTER EGGS — exact message match, case-insensitive
-    # Images are stored in the project's assets/ directory.
+    # Images are stored in the project's root directory.
     # ========================================================
     easter_eggs = {
-        "человек": "easter_person.jpg",
-        "песня": "easter_song.jpg",
-        "авиасейлс": "easter_aviasales.png",
+        "человек": "IMG_20261031_171705.jpg",
+        "песня": "i (14).jpeg",
+        "авиасейлс": "a6a456o5tgt30yrnjnp72hpjbjz8pxsx.png",
     }
 
     easter_egg_file = easter_eggs.get(
@@ -7051,7 +7051,6 @@ async def text_handler(
     if easter_egg_file:
         image_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "assets",
             easter_egg_file,
         )
 
