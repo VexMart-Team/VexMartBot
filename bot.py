@@ -7086,6 +7086,16 @@ async def callback_router(
             return
 
         # ----------------------------
+        # STORE STATS
+        # ----------------------------
+
+        # Обрабатываем раньше общего префикса store_,
+        # иначе store_stats воспринимается как ID магазина.
+        if data == "store_stats":
+            await store_stats(update, context)
+            return
+
+        # ----------------------------
         # STORES
         # ----------------------------
 
@@ -7324,17 +7334,6 @@ async def callback_router(
 
         if data == "switch_buyer":
             await switch_buyer(
-                update,
-                context,
-            )
-            return
-
-        # ----------------------------
-        # OLD STORE STATS
-        # ----------------------------
-
-        if data == "store_stats":
-            await store_stats(
                 update,
                 context,
             )
