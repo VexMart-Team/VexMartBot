@@ -31,7 +31,7 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-VERSION = "0.49.0"
+VERSION = "0.50.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
@@ -142,6 +142,13 @@ def db_rpc(function_name, params):
     except Exception as e:
         print(f"[DB RPC ERROR] {function_name}: {e}")
         return None
+
+
+def rpc_result_dict(result):
+    """Нормализует JSONB-ответ Supabase RPC к словарю."""
+    if isinstance(result, list):
+        result = result[0] if result else None
+    return result if isinstance(result, dict) else None
 
 
 # ============================================================
@@ -417,21 +424,58 @@ async def open_store(update, context, store_id):
     query = update.callback_query
     store = get_owned_store(query.from_user.id)
     if not store or store.get("id") != store_id:
-        await safe_query_answer(query, "Только владелец может открыть магазин.", show_alert=True); return
+        await safe_query_answer(query, "Только владелец может открыть магазин.", show_alert=True)
+        return
     if store_is_open(store):
-        await safe_query_answer(query, "Магазин уже открыт."); return
-    db_update("stores", {"status":"open"}, {"id":store_id})
-    queued = db_select("orders", filters_dict={"store_id":store_id,"status":"queued"})
-    if queued:
-        db_update("orders", {"status":"pending"}, {"store_id":store_id,"status":"queued"})
-        members = get_store_member_ids(store_id)
-        for order in queued:
-            buyer_id = order.get("buyer_id") or order.get("user_id")
-            await notify_user(context.bot, buyer_id, f"🟢 Магазин снова открыт!\n\n📦 Заказ #{order.get('id')} снова передан продавцам.")
-            for member_id in members:
-                await notify_user(context.bot, member_id, f"🛒 Появился отложенный заказ!\n\n📦 Заказ #{order.get('id')}\nТовар: {order.get('product_name') or 'Товар'}")
-    await safe_query_answer(query, f"🟢 Магазин открыт! Заказов выпущено: {len(queued)}", show_alert=True)
+        await safe_query_answer(query, "Магазин уже открыт.")
+        return
+
+    updated = db_update("stores", {"status": "open"}, {"id": store_id})
+    refreshed_store = get_store(store_id)
+    if not refreshed_store or not store_is_open(refreshed_store):
+        await safe_query_answer(query, "Не удалось открыть магазин. Попробуй ещё раз.", show_alert=True)
+        return
+
+    queued = db_select("orders", filters_dict={"store_id": store_id, "status": "queued"})
+    result = rpc_result_dict(db_rpc("activate_queued_orders", {
+        "p_store_id": store_id,
+        "p_seller_id": query.from_user.id,
+    }))
+    if result is None:
+        # Не оставляем магазин в открытом состоянии с неактивированной очередью.
+        db_update("stores", {"status": "closed"}, {"id": store_id})
+        await safe_query_answer(
+            query,
+            "Не удалось активировать очередь заказов. Магазин оставлен закрытым — попробуй ещё раз.",
+            show_alert=True,
+        )
+        await my_store(update, context)
+        return
+
+    members = get_store_member_ids(store_id)
+    for order in queued:
+        buyer_id = order.get("buyer_id") or order.get("user_id")
+        await notify_user(
+            context.bot,
+            buyer_id,
+            f"🟢 Магазин снова открыт!\n\n📦 Заказ #{order.get('id')} снова передан продавцам.",
+        )
+        item_text = order_items_text(order)
+        for member_id in members:
+            await notify_user(
+                context.bot,
+                member_id,
+                f"🛒 Появился отложенный заказ!\n\n📦 Заказ #{order.get('id')}\n{item_text}",
+            )
+
+    activated = int(result.get("activated_orders", 0) or 0)
+    await safe_query_answer(
+        query,
+        f"🟢 Магазин открыт! Заказов выпущено: {activated}",
+        show_alert=True,
+    )
     await my_store(update, context)
+
 
 async def close_store(update, context, store_id):
     query = update.callback_query
@@ -4366,13 +4410,23 @@ async def notify_order_sellers(bot, order_ids):
         order = rows[0]
         if order.get("status") != "pending" or not order.get("store_id"):
             continue
-        product_name = order.get("product_name") or "Товар"
+
+        items = get_order_items(order.get("id"))
+        if items:
+            item_text = "\n".join(
+                f"• {item.get('product_name') or 'Товар'} ×{item.get('quantity', 1)} — {item.get('total_price', 0)} VXC"
+                for item in items
+            )
+        else:
+            item_text = (
+                f"• {order.get('product_name') or 'Товар'} ×{order.get('quantity', 1)}"
+            )
+
         buyer = get_user(order.get("buyer_id") or order.get("user_id"))
         buyer_name = (buyer or {}).get("first_name") or (buyer or {}).get("username") or "Покупатель"
         message = (
             "🛒 Новый заказ!\n\n"
-            f"📦 {product_name}\n"
-            f"🔢 Количество: {order.get('quantity', 1)}\n"
+            f"{item_text}\n\n"
             f"💰 Сумма: {order.get('total_price', 0)} VXC\n"
             f"👤 Покупатель: {buyer_name}\n"
             f"🧾 Заказ: #{order.get('id')}"
@@ -4381,13 +4435,33 @@ async def notify_order_sellers(bot, order_ids):
             await notify_user(bot, member_id, message)
 
 
+def get_order_items(order_id):
+    """Возвращает позиции заказа; старые заказы поддерживаются через fallback."""
+    return db_select(
+        "order_items",
+        filters_dict={"order_id": order_id},
+        order_by="id",
+        ascending=True,
+    )
+
+
+def order_items_text(order, bullet="• "):
+    items = get_order_items(order.get("id"))
+    if items:
+        return "\n".join(
+            f"{bullet}{item.get('product_name') or 'Товар'} ×{item.get('quantity', 1)} — {item.get('total_price', 0)} VXC"
+            for item in items
+        )
+    return (
+        f"{bullet}{order.get('product_name') or 'Товар'} ×{order.get('quantity', 1)}"
+        f" — {order.get('total_price', 0)} VXC"
+    )
+
+
 def build_order_receipt(order):
     store = get_store(order.get("store_id")) if order.get("store_id") else None
     quantity = int(order.get("quantity", 1) or 1)
     total = int(order.get("total_price", 0) or 0)
-    unit_price = order.get("price")
-    if unit_price is None:
-        unit_price = total // max(quantity, 1)
     created_at = order.get("created_at")
     date_text = "не указана"
     if created_at:
@@ -4399,12 +4473,24 @@ def build_order_receipt(order):
         except Exception:
             date_text = str(created_at)
     store_name = store.get("name") if store else "Магазин удалён или не указан"
+    items = get_order_items(order.get("id"))
+    if items:
+        products_text = "\n".join(
+            f"• {item.get('product_name') or 'Товар'} ×{item.get('quantity', 1)} — "
+            f"{item.get('unit_price', 0)} VXC/шт. · {item.get('total_price', 0)} VXC"
+            for item in items
+        )
+    else:
+        unit_price = order.get("price")
+        if unit_price is None:
+            unit_price = total // max(quantity, 1)
+        products_text = (
+            f"• {order.get('product_name') or 'Товар'} ×{quantity} — {unit_price} VXC/шт."
+        )
     return (
         "🧾 ЭЛЕКТРОННЫЙ ЧЕК VEXMART\n\n"
         f"🏪 Магазин: {store_name}\n"
-        f"📦 Товар: {order.get('product_name') or 'Товар'}\n"
-        f"🔢 Количество: {quantity}\n"
-        f"💵 Цена за единицу: {unit_price} VXC\n"
+        f"📦 Состав заказа:\n{products_text}\n\n"
         f"💰 Итого: {total} VXC\n"
         f"📅 Дата заказа: {date_text}\n"
         f"🆔 Заказ: #{order.get('id')}\n\n"
@@ -4508,17 +4594,25 @@ async def buyer_orders(update, context):
         return
 
     status_text = {
-        "pending": "⏳ Ожидает",
+        "pending": "⏳ Ожидает продавца",
         "queued": "⏸ В очереди",
         "accepted": "✅ Принят",
+        "delivered": "📬 Ожидает подтверждения",
         "completed": "🎉 Выполнен",
+        "done": "🎉 Выполнен",
+        "rejected": "❌ Отклонён",
         "cancelled": "❌ Отменён",
     }
     lines = ["📦 Мои заказы (последние 20):\n"]
     buttons = []
     for order in orders:
+        item_rows = get_order_items(order.get("id"))
+        item_names = ", ".join(
+            f"{item.get('product_name') or 'Товар'} ×{item.get('quantity', 1)}"
+            for item in item_rows
+        ) if item_rows else (order.get("product_name") or "Товар")
         lines.append(
-            f"#{order.get('id')} — {order.get('product_name') or 'Товар'} · "
+            f"#{order.get('id')} — {item_names} · "
             f"{order.get('total_price', 0)} VXC · "
             f"{status_text.get(order.get('status'), order.get('status'))}"
         )
@@ -4537,535 +4631,360 @@ async def buyer_order_details(update, context, order_id):
     if not rows:
         await safe_query_answer(query, "Заказ не найден.", show_alert=True)
         return
+
     order = rows[0]
     status = order.get("status")
-    if status == "completed":
+    if status in {"completed", "done"}:
         text = build_order_receipt(order)
     else:
         status_names = {
             "pending": "⏳ Ожидает продавца",
             "queued": "⏸ Ожидает открытия магазина",
             "accepted": "✅ Продавец принял заказ",
-            "cancelled": "❌ Заказ отменён",
+            "delivered": "📬 Продавец отметил заказ доставленным. Подтверди получение.",
+            "rejected": "❌ Продавец отклонил заказ. VXC возвращены.",
+            "cancelled": "❌ Заказ отменён. VXC возвращены.",
         }
         text = (
             f"📦 Заказ #{order_id}\n\n"
-            f"Товар: {order.get('product_name') or 'Товар'}\n"
-            f"Количество: {order.get('quantity', 1)}\n"
+            f"Состав заказа:\n{order_items_text(order)}\n\n"
             f"Сумма: {order.get('total_price', 0)} VXC\n"
             f"Статус: {status_names.get(status, status)}"
         )
+
     buttons = []
-    if status == "completed":
+    if status in {"pending", "queued"}:
+        buttons.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"buyer_cancel_order_{order_id}")])
+    if status == "delivered":
+        buttons.append([InlineKeyboardButton("✅ Подтвердить получение", callback_data=f"buyer_confirm_order_{order_id}")])
+    if status in {"completed", "done"}:
         buttons.append([InlineKeyboardButton("🔄 Повторить заказ", callback_data=f"repeat_order_{order_id}")])
     buttons.append([InlineKeyboardButton("⬅️ К заказам", callback_data="buyer_orders")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     await safe_query_answer(query)
 
 
+async def buyer_cancel_order(update, context, order_id):
+    query = update.callback_query
+    buyer_id = query.from_user.id
+    rows = db_select("orders", filters_dict={"id": order_id, "buyer_id": buyer_id}, limit=1)
+    if not rows:
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
+        return
+    order = rows[0]
+    if order.get("status") not in {"pending", "queued"}:
+        await safe_query_answer(query, "Этот заказ уже нельзя отменить.", show_alert=True)
+        return
+
+    result = rpc_result_dict(db_rpc("cancel_order", {
+        "p_order_id": order_id,
+        "p_buyer_id": buyer_id,
+    }))
+    if not result:
+        await safe_query_answer(query, "Не удалось отменить заказ. Возможно, он уже обработан.", show_alert=True)
+        return
+
+    await safe_query_answer(query, f"Заказ отменён. Возвращено {result.get('refunded', order.get('total_price', 0))} VXC.", show_alert=True)
+    for member_id in get_store_member_ids(order.get("store_id")):
+        await notify_user(context.bot, member_id, f"ℹ️ Покупатель отменил заказ #{order_id}.")
+    await buyer_order_details(update, context, order_id)
+
+
+async def buyer_confirm_order(update, context, order_id):
+    query = update.callback_query
+    buyer_id = query.from_user.id
+    rows = db_select("orders", filters_dict={"id": order_id, "buyer_id": buyer_id}, limit=1)
+    if not rows:
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
+        return
+    order = rows[0]
+    if order.get("status") != "delivered":
+        await safe_query_answer(query, "Продавец ещё не отметил заказ доставленным.", show_alert=True)
+        return
+
+    result = rpc_result_dict(db_rpc("confirm_order_receipt", {
+        "p_order_id": order_id,
+        "p_buyer_id": buyer_id,
+    }))
+    if not result:
+        await safe_query_answer(query, "Не удалось подтвердить получение. Возможно, заказ уже обработан.", show_alert=True)
+        return
+
+    increment_user_counter(buyer_id, "purchase_count", 1)
+    await add_xp(context.bot, buyer_id, XP_PURCHASE, "purchase")
+    seller_id = order.get("seller_id")
+    if seller_id:
+        await add_xp(context.bot, seller_id, XP_SALE, "sale")
+        await notify_user(context.bot, seller_id, f"🎉 Покупатель подтвердил получение заказа #{order_id}. Продажа засчитана!")
+
+    await safe_query_answer(query, "🎉 Получение подтверждено!", show_alert=True)
+    await buyer_order_details(update, context, order_id)
+
+
 async def repeat_order(update, context, order_id):
     query = update.callback_query
     rows = db_select("orders", filters_dict={"id": order_id, "buyer_id": query.from_user.id}, limit=1)
-    if not rows or rows[0].get("status") != "completed":
+    if not rows or rows[0].get("status") not in {"completed", "done"}:
         await safe_query_answer(query, "Повторить можно только выполненный заказ.", show_alert=True)
         return
+
     order = rows[0]
-    product = get_product(order.get("product_id"))
-    if not product:
-        await safe_query_answer(query, "Этот товар больше не существует.", show_alert=True)
+    items = get_order_items(order_id)
+    if not items:
+        items = [{
+            "product_id": order.get("product_id"),
+            "quantity": order.get("quantity", 1),
+            "product_name": order.get("product_name"),
+        }]
+
+    added = 0
+    for item in items:
+        product = get_product(item.get("product_id")) if item.get("product_id") else None
+        if not product:
+            continue
+        quantity = max(1, min(int(item.get("quantity", 1) or 1), 99))
+        existing = db_select("cart", filters_dict={"user_id": query.from_user.id, "product_id": product["id"]}, limit=1)
+        if existing:
+            old_quantity = int(existing[0].get("quantity", 0) or 0)
+            new_quantity = min(99, old_quantity + quantity)
+            db_update("cart", {"quantity": new_quantity}, {"id": existing[0]["id"]})
+        else:
+            db_insert("cart", {"user_id": query.from_user.id, "product_id": product["id"], "quantity": quantity})
+        added += 1
+
+    if not added:
+        await safe_query_answer(query, "Товары из этого заказа больше недоступны.", show_alert=True)
         return
-    quantity = max(1, min(int(order.get("quantity", 1) or 1), 99))
-    existing = db_select("cart", filters_dict={"user_id": query.from_user.id, "product_id": product["id"]}, limit=1)
-    if existing:
-        db_update("cart", {"quantity": int(existing[0].get("quantity", 0) or 0) + quantity}, {"id": existing[0]["id"]})
-    else:
-        db_insert("cart", {"user_id": query.from_user.id, "product_id": product["id"], "quantity": quantity})
-    await safe_query_answer(query, "Товар добавлен в корзину!")
+    await safe_query_answer(query, f"Добавлено товаров в корзину: {added}")
     await show_cart(update, context, acknowledge=False)
 
 
-# ============================================================
-# SELLER ORDERS
-# ============================================================
-
-async def seller_orders(
-    update,
-    context,
-    acknowledge=True,
-):
+async def seller_orders(update, context, acknowledge=True):
     query = update.callback_query
-
     user_id = query.from_user.id
-
     stores = get_user_stores(user_id)
-
-    store_ids = {
-        store["id"]
-        for store in stores
-    }
+    store_ids = {store["id"] for store in stores}
 
     if not store_ids:
         await query.edit_message_text(
             "🏪 У тебя нет магазина.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="seller_menu")]]),
         )
-
         if acknowledge:
             await safe_query_answer(query)
-
         return
 
-    all_orders = db_select(
-        "orders",
-        order_by="created_at",
-        ascending=False,
-    )
-
-    orders = [
-        order
-        for order in all_orders
-        if order.get("store_id")
-        in store_ids
-    ]
-
+    all_orders = db_select("orders", order_by="created_at", ascending=False)
+    orders = [order for order in all_orders if order.get("store_id") in store_ids]
     if not orders:
         await query.edit_message_text(
             "🛒 Заказов пока нет.",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton(
-                        "⬅️ Назад",
-                        callback_data="seller_menu",
-                    )
-                ]]
-            ),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="seller_menu")]]),
         )
-
         if acknowledge:
             await safe_query_answer(query)
-
         return
 
-    text = "🛒 Заказы магазина:\n\n"
+    status_text = {
+        "pending": "⏳ Ожидает принятия",
+        "queued": "⏸ В очереди",
+        "accepted": "✅ Принят — ожидает доставки",
+        "delivered": "📬 Ожидает подтверждения покупателя",
+        "completed": "🎉 Завершён",
+        "done": "🎉 Завершён",
+        "rejected": "❌ Отклонён",
+        "cancelled": "❌ Отменён",
+    }
+    lines = ["🛒 Заказы магазина:\n"]
     buttons = []
-
     for order in orders:
-        text += (
-            f"#{order.get('id')} — "
-            f"{order.get('product_name') or 'Товар'}\n"
+        item_rows = get_order_items(order.get("id"))
+        names = ", ".join(
+            f"{item.get('product_name') or 'Товар'} ×{item.get('quantity', 1)}"
+            for item in item_rows
+        ) if item_rows else (order.get("product_name") or "Товар")
+        lines.append(
+            f"#{order.get('id')} — {names}\n"
             f"💰 {order.get('total_price', 0)} VXC\n"
-            f"Статус: {order.get('status')}\n\n"
+            f"Статус: {status_text.get(order.get('status'), order.get('status'))}\n"
         )
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    f"📦 Заказ #{order.get('id')}",
-                    callback_data=(
-                        f"seller_order_{order['id']}"
-                    ),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад",
-                callback_data="seller_menu",
-            )
-        ]
-    )
-
-    await query.edit_message_text(
-        text[:4000],
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
-
+        buttons.append([InlineKeyboardButton(
+            f"📦 Заказ #{order.get('id')}",
+            callback_data=f"seller_order_{order['id']}",
+        )])
+    buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="seller_menu")])
+    await query.edit_message_text("\n".join(lines)[:3900], reply_markup=InlineKeyboardMarkup(buttons))
     if acknowledge:
         await safe_query_answer(query)
 
 
-async def seller_order_details(
-    update,
-    context,
-    order_id,
-    acknowledge=True,
-):
+async def seller_order_details(update, context, order_id, acknowledge=True):
     query = update.callback_query
     user_id = query.from_user.id
-
-    orders = db_select(
-        "orders",
-        filters_dict={"id": order_id},
-        limit=1,
-    )
-
+    orders = db_select("orders", filters_dict={"id": order_id}, limit=1)
     if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
         return
 
     order = orders[0]
     store_id = order.get("store_id")
-
-    if not store_id or not is_store_member(
-        user_id,
-        store_id,
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
+    if not store_id or not is_store_member(user_id, store_id):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
         return
 
-    buyer = get_user(
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
-
-    buyer_name = (
-        buyer.get("first_name")
-        if buyer
-        else "Покупатель"
-    )
-
-    status = order.get(
-        "status",
-        "pending",
-    )
-
+    buyer = get_user(order.get("buyer_id") or order.get("user_id"))
+    buyer_name = (buyer or {}).get("first_name") or (buyer or {}).get("username") or "Покупатель"
+    status = order.get("status", "pending")
+    status_names = {
+        "pending": "⏳ Ожидает принятия",
+        "queued": "⏸ Магазин закрыт — заказ в очереди",
+        "accepted": "✅ Принят, ожидает доставки",
+        "delivered": "📬 Доставлен, ждёт подтверждения покупателя",
+        "completed": "🎉 Завершён",
+        "done": "🎉 Завершён (старый статус)",
+        "rejected": "❌ Отклонён",
+        "cancelled": "❌ Отменён покупателем",
+    }
     text = (
         f"📦 Заказ #{order.get('id')}\n\n"
-        f"Товар: "
-        f"{order.get('product_name') or 'Товар'}\n"
-        f"Количество: "
-        f"{order.get('quantity', 1)}\n"
-        f"Сумма: "
-        f"{order.get('total_price', 0)} VXC\n"
+        f"Состав заказа:\n{order_items_text(order)}\n\n"
+        f"Сумма: {order.get('total_price', 0)} VXC\n"
         f"Покупатель: {buyer_name}\n"
-        f"Статус: {status}"
+        f"Статус: {status_names.get(status, status)}"
     )
 
     buttons = []
-
     if status == "queued":
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "⏸ Магазин закрыт — ожидание открытия",
-                    callback_data="noop",
-                )
-            ]
-        )
+        buttons.append([InlineKeyboardButton("⏸ Ожидает открытия магазина", callback_data="noop")])
+    elif status == "pending":
+        buttons.append([
+            InlineKeyboardButton("✅ Принять", callback_data=f"accept_order_{order_id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"cancel_order_{order_id}"),
+        ])
+    elif status == "accepted":
+        buttons.append([InlineKeyboardButton("📦 Отметить доставку", callback_data=f"complete_order_{order_id}")])
+    buttons.append([InlineKeyboardButton("⬅️ Заказы", callback_data="seller_orders")])
 
-    if status == "pending":
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "✅ Принять",
-                    callback_data=(
-                        f"accept_order_{order_id}"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "❌ Отменить",
-                    callback_data=(
-                        f"cancel_order_{order_id}"
-                    ),
-                ),
-            ]
-        )
-
-    if status == "accepted":
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🎉 Выполнить",
-                    callback_data=(
-                        f"complete_order_{order_id}"
-                    ),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "⬅️ Заказы",
-                callback_data="seller_orders",
-            )
-        ]
-    )
-
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            buttons
-        ),
-    )
-
+    await query.edit_message_text(text[:3900], reply_markup=InlineKeyboardMarkup(buttons))
     if acknowledge:
         await safe_query_answer(query)
 
 
-async def accept_order(
-    update,
-    context,
-    order_id,
-):
+async def accept_order(update, context, order_id):
     query = update.callback_query
     user_id = query.from_user.id
-
-    orders = db_select(
-        "orders",
-        filters_dict={"id": order_id},
-        limit=1,
-    )
-
+    orders = db_select("orders", filters_dict={"id": order_id}, limit=1)
     if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
         return
-
     order = orders[0]
-
-    if not is_store_member(
-        user_id,
-        order.get("store_id"),
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
+    if not is_store_member(user_id, order.get("store_id")):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
         return
-
     if order.get("status") != "pending":
-        await safe_query_answer(
-            query,
-            "Заказ уже обработан.",
-        )
+        await safe_query_answer(query, "Заказ уже обработан.", show_alert=True)
         return
 
-    db_update(
-        "orders",
-        {
-            "status": "accepted",
-            "seller_id": user_id,
-        },
-        {"id": order_id},
-    )
+    store = get_store(order.get("store_id"))
+    seller_id = order.get("seller_id") or (store or {}).get("owner_id")
+    if not seller_id:
+        await safe_query_answer(query, "Не удалось определить владельца магазина.", show_alert=True)
+        return
+    result = rpc_result_dict(db_rpc("accept_order", {
+        "p_order_id": order_id,
+        "p_seller_id": seller_id,
+    }))
+    if not result:
+        await safe_query_answer(query, "Не удалось принять заказ. Возможно, он уже обработан.", show_alert=True)
+        return
 
-    await safe_query_answer(
-        query,
-        "✅ Заказ принят!",
-    )
+    await safe_query_answer(query, "✅ Заказ принят!")
+    await seller_order_details(update, context, order_id, acknowledge=False)
+    buyer_id = order.get("buyer_id") or order.get("user_id")
+    await notify_user(context.bot, buyer_id, f"✅ Продавец принял твой заказ #{order_id}!\n\n{order_items_text(order)}")
 
-    await seller_order_details(
-        update,
-        context,
-        order_id,
-        acknowledge=False,
-    )
 
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
+async def cancel_order(update, context, order_id):
+    """Отклонение продавцом с атомарным возвратом VXC в SQL."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    orders = db_select("orders", filters_dict={"id": order_id}, limit=1)
+    if not orders:
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
+        return
+    order = orders[0]
+    if not is_store_member(user_id, order.get("store_id")):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
+        return
+    if order.get("status") != "pending":
+        await safe_query_answer(query, "Можно отклонить только ожидающий заказ.", show_alert=True)
+        return
 
+    store = get_store(order.get("store_id"))
+    seller_id = order.get("seller_id") or (store or {}).get("owner_id")
+    if not seller_id:
+        await safe_query_answer(query, "Не удалось определить владельца магазина.", show_alert=True)
+        return
+    result = rpc_result_dict(db_rpc("reject_order", {
+        "p_order_id": order_id,
+        "p_seller_id": seller_id,
+    }))
+    if not result:
+        await safe_query_answer(query, "Не удалось отклонить заказ. Возможно, он уже обработан.", show_alert=True)
+        return
+
+    buyer_id = order.get("buyer_id") or order.get("user_id")
     await notify_user(
         context.bot,
         buyer_id,
-        (
-            "✅ Продавец принял твой заказ!\n\n"
-            f"📦 {order.get('product_name') or 'Товар'}"
-        ),
+        f"❌ Твой заказ #{order_id} отклонён продавцом.\n"
+        f"💰 Возвращено: {result.get('refunded', order.get('total_price', 0))} VXC\n\n"
+        f"{order_items_text(order)}",
     )
+    await safe_query_answer(query, "❌ Заказ отклонён, VXC возвращены.")
+    await seller_orders(update, context, acknowledge=False)
 
 
-async def cancel_order(
-    update,
-    context,
-    order_id,
-):
+async def complete_order(update, context, order_id):
+    """Старое имя callback сохранено; теперь действие только отмечает доставку."""
     query = update.callback_query
     user_id = query.from_user.id
-
-    orders = db_select(
-        "orders",
-        filters_dict={"id": order_id},
-        limit=1,
-    )
-
+    orders = db_select("orders", filters_dict={"id": order_id}, limit=1)
     if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
+        await safe_query_answer(query, "Заказ не найден.", show_alert=True)
         return
-
     order = orders[0]
-
-    if not is_store_member(
-        user_id,
-        order.get("store_id"),
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
+    if not is_store_member(user_id, order.get("store_id")):
+        await safe_query_answer(query, "Нет доступа.", show_alert=True)
         return
-
-    if order.get("status") != "pending":
-        await safe_query_answer(
-            query,
-            "Нельзя отменить этот заказ.",
-        )
-        return
-
-    db_update(
-        "orders",
-        {
-            "status": "cancelled",
-            "seller_id": user_id,
-        },
-        {"id": order_id},
-    )
-
-    # Возвращаем деньги покупателю.
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
-
-    buyer = get_user(buyer_id)
-
-    if buyer:
-        add_balance(
-            buyer_id,
-            order.get("total_price", 0) or 0,
-        )
-
-    await notify_user(
-        context.bot,
-        buyer_id,
-        (
-            "❌ Твой заказ отменён продавцом.\n\n"
-            f"📦 {order.get('product_name') or 'Товар'}\n"
-            f"💰 Возвращено: "
-            f"{order.get('total_price', 0)} VXC"
-        ),
-    )
-
-    await safe_query_answer(
-        query,
-        "❌ Заказ отменён.",
-    )
-
-    await seller_orders(
-        update,
-        context,
-        acknowledge=False,
-    )
-
-
-async def complete_order(
-    update,
-    context,
-    order_id,
-):
-    query = update.callback_query
-    user_id = query.from_user.id
-
-    orders = db_select(
-        "orders",
-        filters_dict={"id": order_id},
-        limit=1,
-    )
-
-    if not orders:
-        await safe_query_answer(
-            query,
-            "Заказ не найден.",
-        )
-        return
-
-    order = orders[0]
-
-    if not is_store_member(
-        user_id,
-        order.get("store_id"),
-    ):
-        await safe_query_answer(
-            query,
-            "Нет доступа.",
-        )
-        return
-
     if order.get("status") != "accepted":
-        await safe_query_answer(
-            query,
-            "Заказ ещё не принят.",
-        )
+        await safe_query_answer(query, "Сначала продавец должен принять заказ.", show_alert=True)
         return
 
-    db_update(
-        "orders",
-        {"status": "completed"},
-        {"id": order_id},
-    )
+    store = get_store(order.get("store_id"))
+    seller_id = order.get("seller_id") or (store or {}).get("owner_id")
+    if not seller_id:
+        await safe_query_answer(query, "Не удалось определить владельца магазина.", show_alert=True)
+        return
+    result = rpc_result_dict(db_rpc("mark_order_delivered", {
+        "p_order_id": order_id,
+        "p_seller_id": seller_id,
+    }))
+    if not result:
+        await safe_query_answer(query, "Не удалось отметить доставку. Возможно, заказ уже обработан.", show_alert=True)
+        return
 
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
-
-    increment_user_counter(buyer_id, "purchase_count", 1)
-    await add_xp(context.bot, buyer_id, XP_PURCHASE, "purchase")
-
-    seller_id = order.get("seller_id") or user_id
-    increment_user_counter(seller_id, "sales_count", 1)
-    await add_xp(context.bot, seller_id, XP_SALE, "sale")
-
-    buyer_id = (
-        order.get("buyer_id")
-        or order.get("user_id")
-    )
-
+    buyer_id = order.get("buyer_id") or order.get("user_id")
     await notify_user(
         context.bot,
         buyer_id,
-        "🎉 Твой заказ выполнен!\n\n" + build_order_receipt(order),
+        f"📬 Продавец отметил заказ #{order_id} доставленным.\n\n"
+        f"Проверь заказ и подтверди получение в разделе «Мои заказы».\n"
+        f"{order_items_text(order)}",
     )
+    await safe_query_answer(query, "📬 Доставка отмечена. Ждём подтверждения покупателя.")
+    await seller_order_details(update, context, order_id, acknowledge=False)
 
-    await safe_query_answer(
-        query,
-        "🎉 Заказ выполнен!",
-    )
-
-    await seller_orders(
-        update,
-        context,
-        acknowledge=False,
-    )
-
-
-# ============================================================
-# MY STORE
-# ============================================================
 
 async def my_store(
     update,
@@ -6603,6 +6522,14 @@ async def callback_router(
 
         if data.startswith("buyer_order_"):
             await buyer_order_details(update, context, int(data.rsplit("_", 1)[1]))
+            return
+
+        if data.startswith("buyer_cancel_order_"):
+            await buyer_cancel_order(update, context, int(data.rsplit("_", 1)[1]))
+            return
+
+        if data.startswith("buyer_confirm_order_"):
+            await buyer_confirm_order(update, context, int(data.rsplit("_", 1)[1]))
             return
 
         if data.startswith("repeat_order_"):
